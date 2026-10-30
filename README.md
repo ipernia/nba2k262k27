@@ -5,8 +5,8 @@ que se puedan consumir desde Excel y Power BI. La fuente prevista es el
 endpoint `LeagueGameLog` de `nba_api`.
 
 > **Estado:** ya se pueden descargar las estadísticas por partido de jugadores
-> y equipos y acumularlas en CSV. El lanzador BAT y la programación diaria aún
-> no están implementados.
+> y equipos y acumularlas en CSV. El lanzador BAT está disponible; la
+> programación diaria todavía debe configurarse en Windows.
 
 ## Requisitos
 
@@ -80,6 +80,24 @@ intentos por tipo de registro. Si falla la descarga de jugadores o equipos,
 ninguno de los dos CSV se modifica. Los errores y las ejecuciones correctas se
 registran en `logs/nba_stats.log`.
 
+### Ejecutar en Windows con el BAT
+
+Una vez instalado el proyecto en `.venv`, puedes iniciar la actualización de
+forma rápida:
+
+- Desde el Explorador de archivos, haz doble clic en `run_daily.bat`.
+- Desde la terminal integrada de VS Code, en la raíz del proyecto:
+
+  ```powershell
+  .\run_daily.bat
+  ```
+
+El BAT cambia a la carpeta del proyecto antes de ejecutarlo, por lo que también
+se puede invocar desde otra carpeta. Acepta las mismas opciones que el módulo,
+por ejemplo `.\run_daily.bat --season 2025-26`. En VS Code la salida queda
+visible en la terminal; en ejecución desatendida, consulta
+`logs\nba_stats.log`. El BAT devuelve un código distinto de cero si falla.
+
 Opciones disponibles:
 
 ```powershell
@@ -101,6 +119,7 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 │       ├── client.py
 │       └── storage.py
 ├── tests/
+├── run_daily.bat
 ├── .gitignore
 ├── pyproject.toml
 └── README.md
@@ -108,8 +127,7 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 
 ## Próximas fases
 
-- Añadir un lanzador BAT y documentar su programación diaria con el Programador
-  de tareas de Windows.
+- Documentar la programación diaria con el Programador de tareas de Windows.
 - Valorar CSV de catálogos independientes para jugadores, equipos y partidos,
   además de los registros estadísticos por partido que ya se generan.
 
