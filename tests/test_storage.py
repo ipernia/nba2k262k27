@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from nba_stats.storage import CSVStorageError, save_game_logs
+from nba_stats.storage import (
+    CSVStorageError,
+    save_catalog_tables,
+    save_game_logs,
+)
 
 PLAYER_ROWS = [
     {
@@ -200,4 +204,111 @@ def test_empty_store_does_not_create_csvs(tmp_path: Path) -> None:
     data_directory = tmp_path / "data"
 
     assert save_game_logs(data_directory, [], []) == {"P": 0, "T": 0}
+    assert not data_directory.exists()
+
+
+def test_catalog_updates_are_idempotent_and_preserve_existing_values(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    initial_tables = {
+        "players.csv": (
+            ("PLAYER_ID",),
+            [
+                {
+                    "PLAYER_ID": 23,
+                    "PLAYER_NAME": "Player One",
+                    "COUNTRY": "USA",
+                }
+            ],
+        ),
+        "player_seasons.csv": (
+            ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+            [
+                {
+                    "PLAYER_ID": 23,
+                    "TEAM_ID": 1,
+                    "SEASON_ID": "2025-26",
+                    "POSITION": "Guard",
+                }
+            ],
+        ),
+    }
+
+    assert save_catalog_tables(data_directory, initial_tables) == {
+        "players.csv": 1,
+        "player_seasons.csv": 1,
+    }
+    counts = save_catalog_tables(
+        data_directory,
+        {
+            "players.csv": (
+                ("PLAYER_ID",),
+                [{"PLAYER_ID": 23, "PLAYER_NAME": "", "COUNTRY": None}],
+            ),
+            "player_seasons.csv": (
+                ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+                [
+                    {
+                        "PLAYER_ID": 23,
+                        "TEAM_ID": 1,
+                        "SEASON_ID": "2025-26",
+                        "POSITION": "Forward",
+                    },
+                    {
+                        "PLAYER_ID": 23,
+                        "TEAM_ID": 2,
+                        "SEASON_ID": "2025-26",
+                        "POSITION": "Center",
+                    },
+                ],
+            ),
+        },
+    )
+
+    assert counts == {"players.csv": 1, "player_seasons.csv": 2}
+    players = read_csv(data_directory / "players.csv")
+    seasons = read_csv(data_directory / "player_seasons.csv")
+    assert players == [
+        {"PLAYER_ID": "23", "PLAYER_NAME": "Player One", "COUNTRY": "USA"}
+    ]
+    assert [row["TEAM_ID"] for row in seasons] == ["1", "2"]
+    assert seasons[0]["POSITION"] == "Forward"
+
+
+def test_catalog_validation_does_not_write_any_file(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+
+    with pytest.raises(CSVStorageError, match="claves"):
+        save_catalog_tables(
+            data_directory,
+            {
+                "players.csv": (
+                    ("PLAYER_ID",),
+                    [{"PLAYER_NAME": "Player One"}],
+                ),
+                "teams.csv": (
+                    ("TEAM_ID",),
+                    [{"TEAM_ID": 1, "TEAM_NAME": "Team"}],
+                ),
+            },
+        )
+
+    assert not data_directory.exists()
+
+
+def test_catalog_rejects_empty_primary_key(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+
+    with pytest.raises(CSVStorageError, match="PLAYER_ID"):
+        save_catalog_tables(
+            data_directory,
+            {
+                "players.csv": (
+                    ("PLAYER_ID",),
+                    [{"PLAYER_ID": "", "PLAYER_NAME": "Player One"}],
+                )
+            },
+        )
+
     assert not data_directory.exists()

@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from nba_stats.__main__ import current_season, main
+from nba_stats.__main__ import (
+    _include_logged_player_teams,
+    current_season,
+    main,
+)
+from nba_stats.catalog_client import NBAEnrichmentError
 from nba_stats.client import NBAStatsError, fetch_league_game_logs
 
 
@@ -206,3 +211,159 @@ def test_main_reports_log_directory_error(
 
     assert main([]) == 1
     assert "no se pudo crear la carpeta de registros" in capsys.readouterr().err
+
+
+def test_main_keeps_updated_game_stats_when_catalog_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def fake_fetch_game_logs(
+        season: str, **kwargs: object
+    ) -> dict[str, list[dict[str, object]]]:
+        assert season == "2026-27"
+        assert kwargs["max_attempts"] == 3
+        return {
+            "P": [
+                {
+                    "GAME_ID": "001",
+                    "PLAYER_ID": 23,
+                    "PLAYER_NAME": "Player One",
+                    "TEAM_ID": 1,
+                    "TEAM_ABBREVIATION": "TST",
+                    "TEAM_NAME": "Test Team",
+                    "PTS": 10,
+                }
+            ],
+            "T": [
+                {
+                    "GAME_ID": "001",
+                    "TEAM_ID": 1,
+                    "TEAM_ABBREVIATION": "TST",
+                    "TEAM_NAME": "Test Team",
+                    "PTS": 100,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "nba_stats.__main__.fetch_league_game_logs",
+        fake_fetch_game_logs,
+    )
+
+    def fail_catalogs(season: str, **kwargs: object) -> None:
+        assert season == "2026-27"
+        assert kwargs["timeout_seconds"] == 30
+        raise NBAEnrichmentError("catalog service unavailable")
+
+    monkeypatch.setattr("nba_stats.__main__.fetch_nba_catalogs", fail_catalogs)
+
+    data_directory = tmp_path / "data"
+    assert main(["--season", "2026-27", "--data-dir", str(data_directory)]) == 1
+
+    assert (data_directory / "player_game_stats.csv").exists()
+    assert "catalog service unavailable" in capsys.readouterr().err
+
+
+def test_logged_teams_add_player_trade_history() -> None:
+    catalogs: dict[str, tuple[tuple[str, ...], list[dict[str, object]]]] = {
+        "player_seasons.csv": (
+            ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+            [
+                {
+                    "PLAYER_ID": "23",
+                    "TEAM_ID": "1",
+                    "SEASON_ID": "2025-26",
+                    "PLAYER_NAME": "Player One",
+                }
+            ],
+        )
+    }
+
+    _include_logged_player_teams(
+        catalogs,
+        [
+            {
+                "PLAYER_ID": 23,
+                "TEAM_ID": 2.0,
+                "PLAYER_NAME": "Player One",
+            }
+        ],
+        "2025-26",
+    )
+
+    rows = catalogs["player_seasons.csv"][1]
+    assert {(row["PLAYER_ID"], row["TEAM_ID"]) for row in rows} == {
+        ("23", "1"),
+        ("23", "2"),
+    }
+
+
+def test_catalogs_only_updates_catalog_csvs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_game_log_request(season: str, **kwargs: object) -> None:
+        raise AssertionError(f"Unexpected game-log request: {season} {kwargs}")
+
+    def fake_catalog_fetch(
+        season: str, **kwargs: object
+    ) -> dict[str, tuple[tuple[str, ...], list[dict[str, object]]]]:
+        assert season == "2025-26"
+        assert kwargs["force_refresh"] is False
+        return {
+            "players.csv": (
+                ("PLAYER_ID",),
+                [{"PLAYER_ID": "23", "PLAYER_NAME": "Player One"}],
+            ),
+            "teams.csv": (
+                ("TEAM_ID",),
+                [{"TEAM_ID": "1", "TEAM_NAME": "Test Team"}],
+            ),
+            "player_seasons.csv": (
+                ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+                [
+                    {
+                        "PLAYER_ID": "23",
+                        "TEAM_ID": "1",
+                        "SEASON_ID": "2025-26",
+                    }
+                ],
+            ),
+            "team_seasons.csv": (
+                ("TEAM_ID", "SEASON_ID"),
+                [{"TEAM_ID": "1", "SEASON_ID": "2025-26"}],
+            ),
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "nba_stats.__main__.fetch_league_game_logs", unexpected_game_log_request
+    )
+    monkeypatch.setattr("nba_stats.__main__.fetch_nba_catalogs", fake_catalog_fetch)
+    manifest_path = tmp_path / "manifest.csv"
+    manifest_path.write_text(
+        "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n",
+        encoding="utf-8",
+    )
+    data_directory = tmp_path / "data"
+
+    assert (
+        main(
+            [
+                "--catalogs-only",
+                "--season",
+                "2025-26",
+                "--data-dir",
+                str(data_directory),
+                "--asset-manifest",
+                str(manifest_path),
+            ]
+        )
+        == 0
+    )
+
+    assert (data_directory / "players.csv").read_bytes().startswith(b"\xef\xbb\xbf")
+    assert (data_directory / "team_seasons.csv").exists()
+    assert not (data_directory / "player_game_stats.csv").exists()

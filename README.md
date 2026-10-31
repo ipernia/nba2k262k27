@@ -1,11 +1,14 @@
 # NBA Local Stats
 
 Proyecto local para recopilar estadísticas de la NBA y preparar archivos CSV
-que se puedan consumir desde Excel y Power BI. La fuente prevista es el
-endpoint `LeagueGameLog` de `nba_api`.
+que se puedan consumir desde Excel y Power BI. Las estadísticas por partido
+proceden de `LeagueGameLog`; los catálogos usan endpoints públicos de `nba_api`.
+Los assets de camisetas se incorporan
+únicamente mediante asociaciones curadas con archivos de Wikimedia Commons.
 
-> **Estado:** ya se pueden descargar las estadísticas por partido de jugadores
-> y equipos y acumularlas en CSV. El lanzador BAT está disponible; la
+> **Estado:** el programa descarga estadísticas por partido y actualiza
+> catálogos de jugadores/equipos y dimensiones de temporada. Los datos se
+> guardan en CSV UTF-8 con BOM. El lanzador BAT está disponible; la
 > programación diaria todavía debe configurarse en Windows.
 
 ## Requisitos
@@ -74,27 +77,58 @@ python -m nba_stats --season 2025-26
 
 Los archivos se guardan en `data/`, en UTF-8 con BOM:
 
-- `players.csv`: catálogo con una fila por `PLAYER_ID` y el nombre del jugador.
-- `teams.csv`: catálogo con una fila por `TEAM_ID`, nombre y abreviatura.
+- `players.csv`: catálogo de jugadores con datos biográficos disponibles,
+  como fecha de nacimiento, altura, peso, posición, país y datos del draft.
+- `teams.csv`: catálogo de equipos con nombre, abreviatura, arena y datos
+  organizativos disponibles.
 - `player_game_stats.csv`: estadísticas por `GAME_ID` y `PLAYER_ID`; incluye
   `TEAM_ID` para conservar el equipo por el que jugó en ese partido.
 - `team_game_stats.csv`: estadísticas por `GAME_ID` y `TEAM_ID`.
+- `player_seasons.csv`: relación jugador-equipo-temporada. La actualización
+  combina plantillas NBA con los equipos observados en los registros por
+  partido, por lo que puede representar traspasos dentro de una temporada.
+- `team_seasons.csv`: conferencia, división y clasificación acumulada por
+  `TEAM_ID` y `SEASON_ID`. Los valores de clasificación son la última
+  observación disponible para esa temporada.
+- `team_uniform_assets.csv`: camisetas verificadas por equipo, temporada y
+  edición, con enlace directo, página de origen, MIME, licencia y atribución.
+  Solo se crea cuando el manifiesto contiene assets válidos.
 
-Las claves repetidas se actualizan en lugar de duplicarse. Los archivos
-antiguos `player_game_logs.csv` y `team_game_logs.csv`, si existen, se importan
-al nuevo formato cuando se ejecuta la actualización; no se borran ni se
-modifican. Las solicitudes tienen timeout y hasta tres intentos por tipo de
-registro. Si falla la descarga de jugadores o equipos, los nuevos CSV no se
-actualizan. Los errores y las ejecuciones correctas se registran en
-`logs/nba_stats.log`.
+Las claves repetidas se actualizan en lugar de duplicarse. Los campos vacíos
+de una respuesta nueva no borran valores existentes. Los archivos antiguos
+`player_game_logs.csv` y `team_game_logs.csv`, si existen, se importan al nuevo
+formato; no se borran ni se modifican. Las consultas NBA tienen timeout y
+reintentos limitados. Sus respuestas de catálogo se almacenan en una caché
+local de 20 horas bajo `data/.cache/`; usa `--refresh-catalogs` para ignorarla.
+
+La descarga y el guardado de estadísticas por partido ocurre antes del
+enriquecimiento de catálogos. Si falla una consulta de catálogos o de Commons,
+se informa el error y se conservan tanto los CSV válidos existentes como las
+estadísticas recién guardadas. Los errores y las ejecuciones correctas se
+registran en `logs/nba_stats.log`.
 
 ### Relaciones en Power BI
 
-Configura relaciones uno-a-muchos desde `teams[TEAM_ID]` hacia
-`team_game_stats[TEAM_ID]` y `player_game_stats[TEAM_ID]`, y desde
-`players[PLAYER_ID]` hacia `player_game_stats[PLAYER_ID]`. No se guarda un
-equipo fijo en `players.csv`: un jugador puede cambiar de equipo; el `TEAM_ID`
-de cada fila de `player_game_stats.csv` conserva la relación histórica.
+Consulta [el diccionario de datos](docs/DATA_DICTIONARY.md) para las claves y
+relaciones sugeridas en Power BI. No se guarda un equipo fijo en
+`players.csv`: las relaciones históricas se conservan en `player_game_stats`
+y `player_seasons`.
+
+### Camisetas de Wikimedia Commons
+
+Las imágenes no se buscan por nombre ni se descargan automáticamente de
+NBA.com. Cada archivo debe revisarse manualmente y añadirse a
+`config/team_uniform_manifest.csv` con su título exacto de Commons, el ID de
+equipo, temporada y edición. El programa consulta la licencia y atribución
+actuales en Commons, comprueba el enlace HTTPS directo, el MIME y el contenido
+de imagen, y solo admite CC0, CC BY, CC BY-SA o dominio público. Una imagen que
+no supere las comprobaciones no sustituye datos guardados previamente.
+
+El manifiesto versionado solo contiene cabeceras a propósito. No se ha
+preseleccionado ningún archivo ni se debe inferir la correspondencia por una
+coincidencia de nombres. La licencia del archivo no elimina la obligación de
+respetar sus condiciones de atribución ni las condiciones de uso de los datos
+de la NBA.
 
 ### Ejecutar en Windows con el BAT
 
@@ -119,6 +153,8 @@ Opciones disponibles:
 ```powershell
 python -m nba_stats --help
 python -m nba_stats --season 2025-26 --data-dir data --attempts 3 --timeout 30 --retry-delay 2
+python -m nba_stats --skip-catalogs
+python -m nba_stats --catalogs-only --refresh-catalogs
 ```
 
 El endpoint proporciona datos estadísticos de NBA.com; tener instalada la
@@ -129,21 +165,30 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 ```text
 .
 ├── .vscode/
+├── config/
+│   └── team_uniform_manifest.csv
+├── docs/
+│   └── DATA_DICTIONARY.md
 ├── src/
 │   └── nba_stats/
 │       ├── __main__.py
+│       ├── catalog_client.py
 │       ├── client.py
+│       ├── commons.py
 │       └── storage.py
 ├── tests/
+├── CHANGELOG.md
 ├── run_daily.bat
 ├── .gitignore
 ├── pyproject.toml
 └── README.md
 ```
 
-## Próximas fases
+## Programación diaria
 
-- Documentar la programación diaria con el Programador de tareas de Windows.
+El BAT es apto para ejecutarse desde el Programador de tareas de Windows.
+Configura `run_daily.bat` como programa y usa la carpeta del proyecto como
+directorio de inicio. Revisa `logs\nba_stats.log` para confirmar el resultado.
 
 Los archivos de datos y los registros se guardarán localmente en `data/` y
 `logs/`. Ambas carpetas están excluidas de Git para no publicar datos generados

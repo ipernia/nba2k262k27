@@ -168,6 +168,54 @@ def save_game_logs(
     return accumulated_counts
 
 
+def save_catalog_tables(
+    data_directory: Path,
+    tables: Mapping[str, tuple[tuple[str, ...], Sequence[Mapping[str, object]]]],
+) -> dict[str, int]:
+    """Actualiza catálogos con clave única, preservando datos ante valores vacíos.
+
+    Todos los CSV se preparan antes de escribir ninguno. Cada archivo se escribe
+    primero a un temporal UTF-8-BOM y luego se sustituye de forma atómica.
+    """
+    prepared: list[PreparedTable] = []
+    counts: dict[str, int] = {}
+    for filename, (key_columns, rows) in tables.items():
+        if Path(filename).name != filename or not filename.lower().endswith(".csv"):
+            raise CSVStorageError(f"Nombre de catálogo inválido: {filename}")
+        if not key_columns:
+            raise CSVStorageError(f"El catálogo {filename} requiere una clave.")
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            raise CSVStorageError(f"Las filas de {filename} deben ser una secuencia.")
+
+        path = data_directory / filename
+        headers, rows_by_key = _read_existing(path, key_columns)
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, Mapping):
+                raise CSVStorageError(f"La fila {index} de {filename} no es un mapa.")
+            if any(not isinstance(column, str) or not column for column in row):
+                raise CSVStorageError(
+                    f"El catálogo {filename} tiene un nombre de columna inválido."
+                )
+            missing = [column for column in key_columns if column not in row]
+            if missing:
+                raise CSVStorageError(
+                    f"La fila {index} de {filename} no tiene las claves: "
+                    + ", ".join(missing)
+                )
+            _merge_row(rows_by_key, headers, row, key_columns)
+
+        counts[filename] = len(rows_by_key)
+        if rows or path.exists():
+            if not headers:
+                raise CSVStorageError(
+                    f"No se puede escribir {filename} sin columnas de cabecera."
+                )
+            prepared.append((path, headers, rows_by_key))
+
+    _write_tables(prepared)
+    return counts
+
+
 def _validate_rows(
     rows: Sequence[Mapping[str, object]],
     required_columns: tuple[str, ...],
@@ -239,16 +287,22 @@ def _merge_row(
     for column in row:
         if column not in headers:
             headers.append(column)
-    rows_by_key[key] = {
-        column: _serialize_value(row.get(column, "")) for column in headers
-    }
+    existing = rows_by_key.get(key, {})
+    merged = dict(existing)
+    for column in headers:
+        value = _serialize_value(row.get(column, ""))
+        if value.strip():
+            merged[column] = value
+        else:
+            merged.setdefault(column, "")
+    rows_by_key[key] = merged
 
 
 def _row_key(row: Mapping[str, object], key_columns: tuple[str, ...]) -> RowKey:
     key = tuple(_serialize_value(row.get(column, "")).strip() for column in key_columns)
     if any(not value for value in key):
         raise CSVStorageError(
-            "Las claves GAME_ID y PLAYER_ID/TEAM_ID no pueden estar vacías."
+            f"Las claves {', '.join(key_columns)} no pueden estar vacías."
         )
     return key
 
