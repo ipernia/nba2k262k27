@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 from datetime import date
 from pathlib import Path
 
+from nba_stats.catalog_client import NBAEnrichmentError, fetch_nba_catalogs
 from nba_stats.client import NBAStatsError, fetch_league_game_logs
-from nba_stats.storage import CSVStorageError, save_game_logs
+from nba_stats.commons import (
+    CommonsAssetError,
+    fetch_commons_asset,
+    load_asset_manifest,
+)
+from nba_stats.storage import CSVStorageError, save_catalog_tables, save_game_logs
 
 
 def current_season(today: date | None = None) -> str:
@@ -19,6 +26,48 @@ def current_season(today: date | None = None) -> str:
         current_date.year if current_date.month >= 10 else current_date.year - 1
     )
     return f"{start_year}-{(start_year + 1) % 100:02d}"
+
+
+def _include_logged_player_teams(
+    catalogs: dict[str, tuple[tuple[str, ...], list[dict[str, object]]]],
+    player_game_rows: list[dict[str, object]],
+    season: str,
+) -> None:
+    """Incluye traspasos observados en los registros de partidos de la temporada."""
+    key_columns, roster_rows = catalogs["player_seasons.csv"]
+    merged = {
+        (
+            str(row["PLAYER_ID"]),
+            str(row["TEAM_ID"]),
+            str(row["SEASON_ID"]),
+        ): row
+        for row in roster_rows
+    }
+    for game_row in player_game_rows:
+        player_id = _normalize_identifier(game_row.get("PLAYER_ID"))
+        team_id = _normalize_identifier(game_row.get("TEAM_ID"))
+        if not player_id or not team_id:
+            continue
+        key = (player_id, team_id, season)
+        if key not in merged:
+            merged[key] = {
+                "PLAYER_ID": player_id,
+                "TEAM_ID": team_id,
+                "SEASON_ID": season,
+                "PLAYER_NAME": game_row.get("PLAYER_NAME", ""),
+            }
+    catalogs["player_seasons.csv"] = (key_columns, list(merged.values()))
+
+
+def _normalize_identifier(value: object) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return ""
+        value = int(value)
+    identifier = str(value).strip()
+    return "" if identifier.casefold() in {"", "nan", "none", "<na>"} else identifier
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,7 +96,30 @@ def main(argv: list[str] | None = None) -> int:
         default=2,
         help="Espera entre reintentos, en segundos.",
     )
+    parser.add_argument(
+        "--skip-catalogs",
+        action="store_true",
+        help="Actualiza solo las estadísticas por partido.",
+    )
+    parser.add_argument(
+        "--catalogs-only",
+        action="store_true",
+        help="Actualiza catálogos y camisetas sin descargar estadísticas por partido.",
+    )
+    parser.add_argument(
+        "--refresh-catalogs",
+        action="store_true",
+        help="Ignora la caché local de catálogos y consulta NBA.com de nuevo.",
+    )
+    parser.add_argument(
+        "--asset-manifest",
+        type=Path,
+        default=Path("config") / "team_uniform_manifest.csv",
+        help="Manifiesto revisado de camisetas Commons.",
+    )
     args = parser.parse_args(argv)
+    if args.skip_catalogs and args.catalogs_only:
+        parser.error("--skip-catalogs y --catalogs-only no se pueden combinar.")
     log_directory = Path("logs")
     try:
         log_directory.mkdir(parents=True, exist_ok=True)
@@ -63,34 +135,109 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
 
-    try:
-        game_logs = fetch_league_game_logs(
-            args.season,
-            max_attempts=args.attempts,
-            retry_delay_seconds=args.retry_delay,
-            timeout_seconds=args.timeout,
-        )
-        counts = save_game_logs(
-            args.data_dir,
-            game_logs["P"],
-            game_logs["T"],
-        )
-    except (NBAStatsError, CSVStorageError, ValueError, OSError) as error:
-        logging.exception("No se pudo actualizar la temporada %s.", args.season)
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
+    stats_counts: dict[str, int] | None = None
+    game_logs: dict[str, list[dict[str, object]]] | None = None
+    if not args.catalogs_only:
+        try:
+            game_logs = fetch_league_game_logs(
+                args.season,
+                max_attempts=args.attempts,
+                retry_delay_seconds=args.retry_delay,
+                timeout_seconds=args.timeout,
+            )
+            stats_counts = save_game_logs(
+                args.data_dir,
+                game_logs["P"],
+                game_logs["T"],
+            )
+        except (NBAStatsError, CSVStorageError, ValueError, OSError) as error:
+            logging.exception("No se pudieron actualizar las estadísticas.")
+            print(f"Error en estadísticas: {error}", file=sys.stderr)
+            return 1
 
-    logging.info(
-        "Temporada %s actualizada. Filas acumuladas: jugadores=%d, equipos=%d.",
-        args.season,
-        counts["P"],
-        counts["T"],
-    )
-    print(
-        f"Temporada {args.season} actualizada. Filas acumuladas: "
-        f"jugadores={counts['P']}, equipos={counts['T']}."
-    )
-    return 0
+    catalog_error: Exception | None = None
+    catalog_counts: dict[str, int] = {}
+    if not args.skip_catalogs:
+        try:
+            catalogs = fetch_nba_catalogs(
+                args.season,
+                max_attempts=args.attempts,
+                retry_delay_seconds=args.retry_delay,
+                timeout_seconds=args.timeout,
+                cache_directory=args.data_dir / ".cache" / "nba_catalogs",
+                force_refresh=args.refresh_catalogs,
+            )
+            if game_logs is not None:
+                _include_logged_player_teams(catalogs, game_logs["P"], args.season)
+            catalog_counts = save_catalog_tables(args.data_dir, catalogs)
+            manifest_rows = load_asset_manifest(args.asset_manifest)
+            uniform_rows: list[dict[str, object]] = []
+            known_team_ids = {
+                str(row["TEAM_ID"]) for row in catalogs.get("teams.csv", ((), []))[1]
+            }
+            for manifest_row in manifest_rows:
+                team_id = manifest_row["ENTITY_ID"]
+                if team_id not in known_team_ids:
+                    raise CommonsAssetError(
+                        f"El equipo {team_id} del manifiesto no aparece en los "
+                        f"datos NBA de {args.season}."
+                    )
+                asset = fetch_commons_asset(
+                    manifest_row["FILE_TITLE"],
+                    timeout_seconds=args.timeout,
+                )
+                uniform_rows.append(
+                    {
+                        "TEAM_ID": team_id,
+                        "SEASON_ID": manifest_row["SEASON_ID"],
+                        "EDITION": manifest_row["EDITION"],
+                        "FILE_TITLE": asset.file_title,
+                        "IMAGE_URL": asset.image_url,
+                        "PAGE_URL": asset.page_url,
+                        "MIME_TYPE": asset.mime_type,
+                        "LICENSE": asset.license_name,
+                        "ATTRIBUTION": asset.attribution,
+                        "SOURCE": "Wikimedia Commons",
+                    }
+                )
+            if uniform_rows:
+                catalog_counts.update(
+                    save_catalog_tables(
+                        args.data_dir,
+                        {
+                            "team_uniform_assets.csv": (
+                                ("TEAM_ID", "SEASON_ID", "EDITION"),
+                                uniform_rows,
+                            )
+                        },
+                    )
+                )
+        except (
+            CommonsAssetError,
+            NBAEnrichmentError,
+            CSVStorageError,
+            ValueError,
+            OSError,
+        ) as error:
+            catalog_error = error
+            logging.exception("No se pudieron actualizar todos los catálogos.")
+            print(f"Error en catálogos: {error}", file=sys.stderr)
+
+    if stats_counts is not None:
+        logging.info(
+            "Estadísticas de %s guardadas: jugadores=%d, equipos=%d.",
+            args.season,
+            stats_counts["P"],
+            stats_counts["T"],
+        )
+        print(
+            f"Estadísticas de {args.season} guardadas: "
+            f"jugadores={stats_counts['P']}, equipos={stats_counts['T']}."
+        )
+    if catalog_counts:
+        logging.info("Catálogos actualizados: %s.", catalog_counts)
+        print(f"Catálogos actualizados: {catalog_counts}.")
+    return 1 if catalog_error is not None else 0
 
 
 if __name__ == "__main__":
