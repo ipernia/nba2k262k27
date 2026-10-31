@@ -72,13 +72,29 @@ concreta, por ejemplo:
 python -m nba_stats --season 2025-26
 ```
 
-Los registros se guardan en `data/player_game_logs.csv` y
-`data/team_game_logs.csv`, en UTF-8 con BOM. Las filas se acumulan por
-`GAME_ID` y `PLAYER_ID` o `TEAM_ID`; si se vuelve a descargar una misma clave,
-se actualiza en vez de duplicarse. Las solicitudes tienen timeout y hasta tres
-intentos por tipo de registro. Si falla la descarga de jugadores o equipos,
-ninguno de los dos CSV se modifica. Los errores y las ejecuciones correctas se
-registran en `logs/nba_stats.log`.
+Los archivos se guardan en `data/`, en UTF-8 con BOM:
+
+- `players.csv`: catálogo con una fila por `PLAYER_ID` y el nombre del jugador.
+- `teams.csv`: catálogo con una fila por `TEAM_ID`, nombre y abreviatura.
+- `player_game_stats.csv`: estadísticas por `GAME_ID` y `PLAYER_ID`; incluye
+  `TEAM_ID` para conservar el equipo por el que jugó en ese partido.
+- `team_game_stats.csv`: estadísticas por `GAME_ID` y `TEAM_ID`.
+
+Las claves repetidas se actualizan en lugar de duplicarse. Los archivos
+antiguos `player_game_logs.csv` y `team_game_logs.csv`, si existen, se importan
+al nuevo formato cuando se ejecuta la actualización; no se borran ni se
+modifican. Las solicitudes tienen timeout y hasta tres intentos por tipo de
+registro. Si falla la descarga de jugadores o equipos, los nuevos CSV no se
+actualizan. Los errores y las ejecuciones correctas se registran en
+`logs/nba_stats.log`.
+
+### Relaciones en Power BI
+
+Configura relaciones uno-a-muchos desde `teams[TEAM_ID]` hacia
+`team_game_stats[TEAM_ID]` y `player_game_stats[TEAM_ID]`, y desde
+`players[PLAYER_ID]` hacia `player_game_stats[PLAYER_ID]`. No se guarda un
+equipo fijo en `players.csv`: un jugador puede cambiar de equipo; el `TEAM_ID`
+de cada fila de `player_game_stats.csv` conserva la relación histórica.
 
 ### Ejecutar en Windows con el BAT
 
@@ -128,8 +144,6 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 ## Próximas fases
 
 - Documentar la programación diaria con el Programador de tareas de Windows.
-- Valorar CSV de catálogos independientes para jugadores, equipos y partidos,
-  además de los registros estadísticos por partido que ya se generan.
 
 Los archivos de datos y los registros se guardarán localmente en `data/` y
 `logs/`. Ambas carpetas están excluidas de Git para no publicar datos generados

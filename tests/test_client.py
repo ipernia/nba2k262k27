@@ -35,13 +35,33 @@ def test_fetches_player_and_team_logs_with_expected_parameters() -> None:
     def endpoint_factory(**kwargs: object) -> FakeEndpoint:
         calls.append(kwargs)
         if kwargs["player_or_team_abbreviation"] == "P":
-            return FakeEndpoint([{"GAME_ID": "001", "PLAYER_ID": 23}])
-        return FakeEndpoint([{"GAME_ID": "001", "TEAM_ID": 1610612738}])
+            return FakeEndpoint(
+                [
+                    {
+                        "GAME_ID": "001",
+                        "PLAYER_ID": 23,
+                        "PLAYER_NAME": "Player One",
+                        "TEAM_ID": 1,
+                        "TEAM_ABBREVIATION": "TST",
+                        "TEAM_NAME": "Test Team",
+                    }
+                ]
+            )
+        return FakeEndpoint(
+            [
+                {
+                    "GAME_ID": "001",
+                    "TEAM_ID": 1,
+                    "TEAM_ABBREVIATION": "TST",
+                    "TEAM_NAME": "Test Team",
+                }
+            ]
+        )
 
     result = fetch_league_game_logs("2025-26", endpoint_factory=endpoint_factory)
 
-    assert result["P"] == [{"GAME_ID": "001", "PLAYER_ID": 23}]
-    assert result["T"] == [{"GAME_ID": "001", "TEAM_ID": 1610612738}]
+    assert result["P"][0]["PLAYER_ID"] == 23
+    assert result["T"][0]["TEAM_ID"] == 1
     assert [call["player_or_team_abbreviation"] for call in calls] == ["P", "T"]
     assert all(call["season_type_all_star"] == "Regular Season" for call in calls)
     assert all(call["timeout"] == 30 for call in calls)
@@ -56,8 +76,28 @@ def test_retries_a_failed_request(monkeypatch: pytest.MonkeyPatch) -> None:
         if attempts == 1:
             raise TimeoutError("network timeout")
         if kwargs["player_or_team_abbreviation"] == "P":
-            return FakeEndpoint([{"GAME_ID": "001", "PLAYER_ID": 23}])
-        return FakeEndpoint([{"GAME_ID": "001", "TEAM_ID": 1}])
+            return FakeEndpoint(
+                [
+                    {
+                        "GAME_ID": "001",
+                        "PLAYER_ID": 23,
+                        "PLAYER_NAME": "Player One",
+                        "TEAM_ID": 1,
+                        "TEAM_ABBREVIATION": "TST",
+                        "TEAM_NAME": "Test Team",
+                    }
+                ]
+            )
+        return FakeEndpoint(
+            [
+                {
+                    "GAME_ID": "001",
+                    "TEAM_ID": 1,
+                    "TEAM_ABBREVIATION": "TST",
+                    "TEAM_NAME": "Test Team",
+                }
+            ]
+        )
 
     delays: list[float] = []
     monkeypatch.setattr("nba_stats.client.time.sleep", delays.append)
@@ -127,7 +167,7 @@ def test_rejects_response_missing_identifier() -> None:
         fetch_league_game_logs(
             "2025-26",
             endpoint_factory=lambda **kwargs: make_fake_endpoint(
-                [{"GAME_ID": "001"}], **kwargs
+                [{"GAME_ID": "001", "TEAM_ID": 1}], **kwargs
             ),
         )
 

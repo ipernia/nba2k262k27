@@ -29,8 +29,15 @@ class GameLogEndpoint(Protocol):
 EndpointFactory = Callable[..., GameLogEndpoint]
 
 _REQUIRED_COLUMNS = {
-    "P": ("GAME_ID", "PLAYER_ID"),
-    "T": ("GAME_ID", "TEAM_ID"),
+    "P": (
+        "GAME_ID",
+        "PLAYER_ID",
+        "PLAYER_NAME",
+        "TEAM_ID",
+        "TEAM_ABBREVIATION",
+        "TEAM_NAME",
+    ),
+    "T": ("GAME_ID", "TEAM_ID", "TEAM_ABBREVIATION", "TEAM_NAME"),
 }
 _SEASON_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 
