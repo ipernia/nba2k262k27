@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,10 @@ from urllib.request import Request, urlopen
 
 class CommonsAssetError(RuntimeError):
     """Error al consultar o validar un recurso multimedia de Commons."""
+
+
+class CommonsRequestError(CommonsAssetError):
+    """Error transitorio al acceder a la API o a una imagen de Commons."""
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,8 @@ def fetch_commons_asset(
     file_title: str,
     *,
     timeout_seconds: float = 20,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 2,
     json_opener: JsonOpener | None = None,
     image_opener: ImageOpener | None = None,
 ) -> CommonsAsset:
@@ -88,6 +95,17 @@ def fetch_commons_asset(
         or timeout_seconds <= 0
     ):
         raise ValueError("timeout_seconds debe ser mayor que cero.")
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+        raise ValueError("max_attempts debe ser un entero mayor que cero.")
+    if max_attempts < 1:
+        raise ValueError("max_attempts debe ser un entero mayor que cero.")
+    if (
+        isinstance(retry_delay_seconds, bool)
+        or not isinstance(retry_delay_seconds, (int, float))
+        or not math.isfinite(retry_delay_seconds)
+        or retry_delay_seconds < 0
+    ):
+        raise ValueError("retry_delay_seconds debe ser finito y no negativo.")
     if json_opener is None:
         json_opener = _open_json
     if image_opener is None:
@@ -106,17 +124,14 @@ def fetch_commons_asset(
         f"{_API_URL}?{params}",
         headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
     )
-    try:
-        response = json_opener(request, timeout_seconds)
-        try:
-            payload = json.loads(response.read().decode("utf-8"))
-        finally:
-            _close_response(response)
-    except (OSError, UnicodeError, json.JSONDecodeError, URLError) as error:
-        raise CommonsAssetError(
-            f"No se pudieron consultar los metadatos de Commons para "
-            f"{normalized_title}: {error}"
-        ) from error
+    payload = _request_json(
+        request,
+        normalized_title,
+        timeout_seconds,
+        max_attempts,
+        retry_delay_seconds,
+        json_opener,
+    )
 
     if not isinstance(payload, Mapping):
         raise CommonsAssetError("Commons devolvió una respuesta JSON inválida.")
@@ -175,7 +190,14 @@ def fetch_commons_asset(
     page_url = "https://commons.wikimedia.org/wiki/" + quote(
         title.replace(" ", "_"), safe=":_()!,.-"
     )
-    _verify_direct_image(image_url, mime_type, timeout_seconds, image_opener)
+    _verify_direct_image(
+        image_url,
+        mime_type,
+        timeout_seconds,
+        max_attempts,
+        retry_delay_seconds,
+        image_opener,
+    )
     return CommonsAsset(
         file_title=title,
         image_url=image_url,
@@ -220,23 +242,31 @@ def load_asset_manifest(path: Path) -> list[dict[str, str]]:
                     )
                 row = {key: (value or "").strip() for key, value in raw_row.items()}
                 asset_type = row["ASSET_TYPE"].upper()
-                if asset_type != "JERSEY":
+                if asset_type not in {"JERSEY", "PLAYER_FACE", "TEAM_LOGO"}:
                     raise CommonsAssetError(
-                        f"Solo se admiten camisetas en {path}, línea {index}."
+                        f"Tipo de asset no admitido en {path}, línea {index}."
                     )
                 if not row["ENTITY_ID"] or not row["FILE_TITLE"]:
                     raise CommonsAssetError(
                         f"Falta ENTITY_ID o FILE_TITLE en {path}, línea {index}."
                     )
-                if (
-                    not row["ENTITY_ID"].isdigit()
-                    or not re.fullmatch(r"\d{4}-\d{2}", row["SEASON_ID"])
-                    or (int(row["SEASON_ID"][:4]) + 1) % 100
-                    != int(row["SEASON_ID"][-2:])
-                    or not row["EDITION"]
-                ):
+                if not row["ENTITY_ID"].isdigit():
                     raise CommonsAssetError(
-                        f"ENTITY_ID, SEASON_ID o EDITION inválido "
+                        f"ENTITY_ID inválido ({path}, línea {index})."
+                    )
+                if asset_type == "JERSEY":
+                    if (
+                        not re.fullmatch(r"\d{4}-\d{2}", row["SEASON_ID"])
+                        or (int(row["SEASON_ID"][:4]) + 1) % 100
+                        != int(row["SEASON_ID"][-2:])
+                        or not row["EDITION"]
+                    ):
+                        raise CommonsAssetError(
+                            f"SEASON_ID o EDITION inválido ({path}, línea {index})."
+                        )
+                elif row["SEASON_ID"] or row["EDITION"]:
+                    raise CommonsAssetError(
+                        f"{asset_type} no debe tener temporada ni edición "
                         f"({path}, línea {index})."
                     )
                 key = (
@@ -306,25 +336,43 @@ def _verify_direct_image(
     image_url: str,
     expected_mime_type: str,
     timeout_seconds: float,
+    max_attempts: int,
+    retry_delay_seconds: float,
     image_opener: ImageOpener,
 ) -> None:
     request = Request(
         image_url,
         headers={"User-Agent": _USER_AGENT, "Range": "bytes=0-63"},
     )
-    try:
-        response = image_opener(request, timeout_seconds)
+    for attempt in range(1, max_attempts + 1):
         try:
-            status = response.status
-            final_url = response.url
-            content_type = response.headers.get("Content-Type", "")
-            prefix = response.read(64)
-        finally:
-            _close_response(response)
-    except (OSError, URLError) as error:
-        raise CommonsAssetError(
-            f"No se pudo comprobar la URL directa de la imagen: {error}"
-        ) from error
+            response = image_opener(request, timeout_seconds)
+            try:
+                status = response.status
+                final_url = response.url
+                content_type = response.headers.get("Content-Type", "")
+                prefix = response.read(64)
+            finally:
+                _close_response(response)
+        except (OSError, URLError) as error:
+            if attempt == max_attempts:
+                raise CommonsRequestError(
+                    f"No se pudo comprobar la URL directa de la imagen tras "
+                    f"{max_attempts} intentos: {error}"
+                ) from error
+            time.sleep(retry_delay_seconds)
+            continue
+        if status in (429, 500, 502, 503, 504):
+            if attempt == max_attempts:
+                raise CommonsRequestError(
+                    f"Commons devolvió HTTP {status} al comprobar la imagen "
+                    f"tras {max_attempts} intentos."
+                )
+            time.sleep(retry_delay_seconds)
+            continue
+        break
+    else:
+        raise CommonsRequestError("No se pudo validar la URL de imagen.")
     if status not in (200, 206):
         raise CommonsAssetError(f"URL de imagen no accesible (HTTP {status}).")
     if final_url and urlsplit(final_url).hostname != "upload.wikimedia.org":
@@ -363,6 +411,35 @@ def _close_response(response: ReadableResponse) -> None:
         response.close()
     except OSError as error:
         _LOGGER.warning("No se pudo cerrar una respuesta HTTP de Commons: %s", error)
+
+
+def _request_json(
+    request: Request,
+    file_title: str,
+    timeout_seconds: float,
+    max_attempts: int,
+    retry_delay_seconds: float,
+    json_opener: JsonOpener,
+) -> Mapping[str, object]:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = json_opener(request, timeout_seconds)
+            try:
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                _close_response(response)
+        except (OSError, UnicodeError, json.JSONDecodeError, URLError) as error:
+            if attempt == max_attempts:
+                raise CommonsRequestError(
+                    f"No se pudieron consultar los metadatos de Commons para "
+                    f"{file_title} tras {max_attempts} intentos: {error}"
+                ) from error
+            time.sleep(retry_delay_seconds)
+            continue
+        if isinstance(payload, Mapping):
+            return payload
+        raise CommonsAssetError("Commons devolvió una respuesta JSON inválida.")
+    raise CommonsRequestError(f"No se obtuvo respuesta de Commons para {file_title}.")
 
 
 def _open_json(request: Request, timeout_seconds: float) -> ReadableResponse:

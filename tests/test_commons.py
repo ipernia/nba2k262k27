@@ -7,6 +7,7 @@ import pytest
 
 from nba_stats.commons import (
     CommonsAssetError,
+    CommonsRequestError,
     fetch_commons_asset,
     load_asset_manifest,
 )
@@ -96,6 +97,69 @@ def test_fetches_licensed_asset_and_verifies_direct_image() -> None:
     assert all(timeout == 4 for _, timeout in requests)
 
 
+def test_retries_transient_commons_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    json_attempts = 0
+    image_attempts = 0
+    delays: list[float] = []
+
+    def json_opener(request: Request, timeout: float) -> FakeResponse:
+        nonlocal json_attempts
+        assert "Example.png" in request.full_url
+        assert timeout > 0
+        json_attempts += 1
+        if json_attempts == 1:
+            raise TimeoutError("temporary API timeout")
+        return FakeResponse(_commons_payload())
+
+    def image_opener(request: Request, timeout: float) -> FakeResponse:
+        nonlocal image_attempts
+        assert request.full_url.startswith("https://upload.wikimedia.org/")
+        assert timeout > 0
+        image_attempts += 1
+        if image_attempts == 1:
+            raise TimeoutError("temporary image timeout")
+        return FakeResponse(
+            _PNG_BYTES,
+            url=request.full_url,
+            headers={"Content-Type": "image/png"},
+        )
+
+    monkeypatch.setattr("nba_stats.commons.time.sleep", delays.append)
+
+    fetch_commons_asset(
+        "Example.png",
+        max_attempts=2,
+        retry_delay_seconds=0.25,
+        json_opener=json_opener,
+        image_opener=image_opener,
+    )
+
+    assert json_attempts == 2
+    assert image_attempts == 2
+    assert delays == [0.25, 0.25]
+
+
+def test_reports_commons_request_error_after_retry_limit() -> None:
+    attempts = 0
+
+    def failing_json_opener(request: Request, timeout: float) -> FakeResponse:
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError(
+            f"network unavailable for {request.full_url} after {timeout} seconds"
+        )
+
+    with pytest.raises(CommonsRequestError, match="tras 2 intentos"):
+        fetch_commons_asset(
+            "Example.png",
+            max_attempts=2,
+            retry_delay_seconds=0,
+            json_opener=failing_json_opener,
+        )
+
+    assert attempts == 2
+
+
 @pytest.mark.parametrize("license_name", ["CC BY-NC 4.0", "Unknown"])
 def test_rejects_non_free_or_unknown_license(license_name: str) -> None:
     def json_opener(request: Request, timeout: float) -> FakeResponse:
@@ -183,10 +247,27 @@ def test_loads_curated_jersey_manifest(tmp_path: Path) -> None:
     ]
 
 
+def test_loads_player_face_and_team_logo_entries(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.csv"
+    path.write_text(
+        "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n"
+        "PLAYER_FACE,23,,,Player_face.jpg\n"
+        "TEAM_LOGO,1610612747,,,Team_logo.png\n",
+        encoding="utf-8",
+    )
+
+    rows = load_asset_manifest(path)
+
+    assert [row["ASSET_TYPE"] for row in rows] == ["PLAYER_FACE", "TEAM_LOGO"]
+    assert rows[0]["FILE_TITLE"] == "File:Player face.jpg"
+    assert rows[1]["FILE_TITLE"] == "File:Team logo.png"
+
+
 @pytest.mark.parametrize(
     "manifest_row",
     [
         "PLAYER,23,, ,Player.png",
+        "PLAYER_FACE,23,2025-26,,Player.png",
         "JERSEY,team,2025-26,HOME,Uniform.png",
         "JERSEY,1,2025-27,HOME,Uniform.png",
     ],

@@ -1,3 +1,4 @@
+import csv
 from datetime import date
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from nba_stats.__main__ import (
 )
 from nba_stats.catalog_client import NBAEnrichmentError
 from nba_stats.client import NBAStatsError, fetch_league_game_logs
+from nba_stats.commons import CommonsAsset, CommonsAssetError
 
 
 class FakeFrame:
@@ -347,6 +349,16 @@ def test_catalogs_only_updates_catalog_csvs(
         "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n",
         encoding="utf-8",
     )
+    branding_path = tmp_path / "branding.csv"
+    branding_path.write_text(
+        "TEAM_ID,PRIMARY_COLOR_RGB,SECONDARY_COLOR_RGB,SOURCE_URL\n",
+        encoding="utf-8",
+    )
+    awards_path = tmp_path / "awards.csv"
+    awards_path.write_text(
+        "PLAYER_ID,SEASON_ID,ACHIEVEMENT,SOURCE_URL\n",
+        encoding="utf-8",
+    )
     data_directory = tmp_path / "data"
 
     assert (
@@ -359,6 +371,10 @@ def test_catalogs_only_updates_catalog_csvs(
                 str(data_directory),
                 "--asset-manifest",
                 str(manifest_path),
+                "--team-branding-manifest",
+                str(branding_path),
+                "--awards-manifest",
+                str(awards_path),
             ]
         )
         == 0
@@ -367,3 +383,238 @@ def test_catalogs_only_updates_catalog_csvs(
     assert (data_directory / "players.csv").read_bytes().startswith(b"\xef\xbb\xbf")
     assert (data_directory / "team_seasons.csv").exists()
     assert not (data_directory / "player_game_stats.csv").exists()
+
+
+def test_catalogs_only_applies_media_colors_and_curated_awards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalogs = {
+        "players.csv": (
+            ("PLAYER_ID",),
+            [{"PLAYER_ID": "23", "PLAYER_NAME": "Player One"}],
+        ),
+        "teams.csv": (
+            ("TEAM_ID",),
+            [{"TEAM_ID": "1", "TEAM_NAME": "Test Team"}],
+        ),
+        "player_seasons.csv": (
+            ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+            [
+                {
+                    "PLAYER_ID": "23",
+                    "TEAM_ID": "1",
+                    "SEASON_ID": "2025-26",
+                }
+            ],
+        ),
+        "team_seasons.csv": (
+            ("TEAM_ID", "SEASON_ID"),
+            [{"TEAM_ID": "1", "SEASON_ID": "2025-26"}],
+        ),
+    }
+
+    def fake_catalog_fetch(
+        season: str, **kwargs: object
+    ) -> dict[str, tuple[tuple[str, ...], list[dict[str, object]]]]:
+        assert season == "2025-26"
+        assert kwargs["max_attempts"] == 3
+        return catalogs
+
+    calls: list[str] = []
+
+    def fake_commons_fetch(file_title: str, **kwargs: object) -> CommonsAsset:
+        calls.append(file_title)
+        assert kwargs["max_attempts"] == 3
+        image_url = (
+            "https://upload.wikimedia.org/example/player.jpg"
+            if "Player" in file_title
+            else "https://upload.wikimedia.org/example/team.png"
+        )
+        return CommonsAsset(
+            file_title=f"File:{file_title}",
+            image_url=image_url,
+            page_url=f"https://commons.wikimedia.org/wiki/File:{file_title}",
+            mime_type="image/jpeg" if "Player" in file_title else "image/png",
+            license_name="CC BY-SA 4.0",
+            attribution="Example Author",
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nba_stats.__main__.fetch_nba_catalogs", fake_catalog_fetch)
+    monkeypatch.setattr("nba_stats.__main__.fetch_commons_asset", fake_commons_fetch)
+    manifest_path = tmp_path / "assets.csv"
+    manifest_path.write_text(
+        "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n"
+        "PLAYER_FACE,23,,,Player_face.jpg\n"
+        "TEAM_LOGO,1,,,Team_logo.png\n",
+        encoding="utf-8",
+    )
+    branding_path = tmp_path / "branding.csv"
+    branding_path.write_text(
+        "TEAM_ID,PRIMARY_COLOR_RGB,SECONDARY_COLOR_RGB,SOURCE_URL\n"
+        '1,"1,2,3","4,5,6",https://example.com/brand\n',
+        encoding="utf-8",
+    )
+    awards_path = tmp_path / "awards.csv"
+    awards_path.write_text(
+        "PLAYER_ID,SEASON_ID,ACHIEVEMENT,SOURCE_URL\n"
+        "23,2025-26,MVP,https://example.com/mvp\n"
+        "23,2025-26,All-NBA First Team,https://example.com/all-nba\n",
+        encoding="utf-8",
+    )
+    data_directory = tmp_path / "data"
+
+    result = main(
+        [
+            "--catalogs-only",
+            "--season",
+            "2025-26",
+            "--data-dir",
+            str(data_directory),
+            "--asset-manifest",
+            str(manifest_path),
+            "--team-branding-manifest",
+            str(branding_path),
+            "--awards-manifest",
+            str(awards_path),
+        ]
+    )
+
+    assert result == 0
+    assert len(calls) == 2
+    with (data_directory / "player_seasons.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as csv_file:
+        player_season = next(csv.DictReader(csv_file))
+    with (data_directory / "team_seasons.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as csv_file:
+        team_season = next(csv.DictReader(csv_file))
+    with (data_directory / "player_awards.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as csv_file:
+        award_rows = list(csv.DictReader(csv_file))
+    with (data_directory / "media_assets.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as csv_file:
+        media_rows = list(csv.DictReader(csv_file))
+
+    assert player_season["PLAYER_FACE_URL"].endswith("player.jpg")
+    assert player_season["INDIVIDUAL_ACHIEVEMENTS"] == ("All-NBA First Team | MVP")
+    assert team_season["TEAM_LOGO_URL"].endswith("team.png")
+    assert team_season["PRIMARY_COLOR_RGB"] == "1,2,3"
+    assert team_season["SECONDARY_COLOR_RGB"] == "4,5,6"
+    assert team_season["COLOR_SOURCE_URL"] == "https://example.com/brand"
+    assert len(award_rows) == len(media_rows) == 2
+
+
+def test_failed_commons_asset_does_not_clear_saved_image_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    catalogs = {
+        "players.csv": (
+            ("PLAYER_ID",),
+            [{"PLAYER_ID": "23", "PLAYER_NAME": "Player One"}],
+        ),
+        "teams.csv": (
+            ("TEAM_ID",),
+            [{"TEAM_ID": "1", "TEAM_NAME": "Test Team"}],
+        ),
+        "player_seasons.csv": (
+            ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
+            [
+                {
+                    "PLAYER_ID": "23",
+                    "TEAM_ID": "1",
+                    "SEASON_ID": "2025-26",
+                    "PLAYER_FACE_URL": "",
+                }
+            ],
+        ),
+        "team_seasons.csv": (
+            ("TEAM_ID", "SEASON_ID"),
+            [{"TEAM_ID": "1", "SEASON_ID": "2025-26"}],
+        ),
+    }
+
+    def fake_catalog_fetch(
+        season: str, **kwargs: object
+    ) -> dict[str, tuple[tuple[str, ...], list[dict[str, object]]]]:
+        assert season == "2025-26"
+        assert kwargs["timeout_seconds"] == 30
+        return catalogs
+
+    def fail_commons_fetch(file_title: str, **kwargs: object) -> CommonsAsset:
+        raise CommonsAssetError(
+            f"direct image URL unavailable for {file_title} ({kwargs})."
+        )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nba_stats.__main__.fetch_nba_catalogs", fake_catalog_fetch)
+    monkeypatch.setattr("nba_stats.__main__.fetch_commons_asset", fail_commons_fetch)
+    manifest_path = tmp_path / "assets.csv"
+    manifest_path.write_text(
+        "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n"
+        "PLAYER_FACE,23,,,Player_face.jpg\n",
+        encoding="utf-8",
+    )
+    branding_path = tmp_path / "branding.csv"
+    branding_path.write_text(
+        "TEAM_ID,PRIMARY_COLOR_RGB,SECONDARY_COLOR_RGB,SOURCE_URL\n",
+        encoding="utf-8",
+    )
+    awards_path = tmp_path / "awards.csv"
+    awards_path.write_text(
+        "PLAYER_ID,SEASON_ID,ACHIEVEMENT,SOURCE_URL\n",
+        encoding="utf-8",
+    )
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    existing_player_path = data_directory / "player_seasons.csv"
+    with existing_player_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=(
+                "PLAYER_ID",
+                "TEAM_ID",
+                "SEASON_ID",
+                "PLAYER_FACE_URL",
+            ),
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "PLAYER_ID": "23",
+                "TEAM_ID": "1",
+                "SEASON_ID": "2025-26",
+                "PLAYER_FACE_URL": "https://upload.wikimedia.org/previous.jpg",
+            }
+        )
+
+    result = main(
+        [
+            "--catalogs-only",
+            "--season",
+            "2025-26",
+            "--data-dir",
+            str(data_directory),
+            "--asset-manifest",
+            str(manifest_path),
+            "--team-branding-manifest",
+            str(branding_path),
+            "--awards-manifest",
+            str(awards_path),
+        ]
+    )
+
+    assert result == 1
+    with existing_player_path.open(encoding="utf-8-sig", newline="") as csv_file:
+        saved_player = next(csv.DictReader(csv_file))
+    assert saved_player["PLAYER_FACE_URL"] == (
+        "https://upload.wikimedia.org/previous.jpg"
+    )
+    assert "direct image URL unavailable" in capsys.readouterr().err
+    assert "No se pudo validar el asset Commons" in caplog.text

@@ -440,6 +440,8 @@ def _player_season_row(
         "WEIGHT": _text(_value(roster, "WEIGHT") or _value(bio, "PLAYER_WEIGHT")),
         "EXP": _text(_value(roster, "EXP")),
         "SCHOOL": _text(_value(roster, "SCHOOL") or _value(bio, "COLLEGE")),
+        "PLAYER_FACE_URL": "",
+        "INDIVIDUAL_ACHIEVEMENTS": "",
     }
 
 
@@ -488,6 +490,10 @@ def _team_season_row(
         "ROAD_RECORD": _text(_value(standing, "ROAD")),
         "L10": _text(_value(standing, "L10")),
         "STREAK": _text(_value(standing, "STRK", "STREAK")),
+        "TEAM_LOGO_URL": "",
+        "PRIMARY_COLOR_RGB": "",
+        "SECONDARY_COLOR_RGB": "",
+        "COLOR_SOURCE_URL": "",
     }
 
 

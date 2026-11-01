@@ -87,12 +87,19 @@ Los archivos se guardan en `data/`, en UTF-8 con BOM:
 - `player_seasons.csv`: relación jugador-equipo-temporada. La actualización
   combina plantillas NBA con los equipos observados en los registros por
   partido, por lo que puede representar traspasos dentro de una temporada.
+  Incluye `PLAYER_FACE_URL` y `INDIVIDUAL_ACHIEVEMENTS`.
 - `team_seasons.csv`: conferencia, división y clasificación acumulada por
-  `TEAM_ID` y `SEASON_ID`. Los valores de clasificación son la última
-  observación disponible para esa temporada.
+  `TEAM_ID` y `SEASON_ID`, con `TEAM_LOGO_URL`, colores `PRIMARY_COLOR_RGB` y
+  `SECONDARY_COLOR_RGB` y `COLOR_SOURCE_URL`. Los valores de clasificación
+  son la última observación disponible para esa temporada.
+- `player_awards.csv`: detalle normalizado de los logros curados, jugador,
+  temporada y URL de la fuente. Solo se crea si hay entradas en su manifiesto.
+- `media_assets.csv`: metadatos de licencia, atribución, página y URL
+  verificada para caras de jugadores y escudos de equipos; solo se crea si
+  alguno se valida correctamente.
 - `team_uniform_assets.csv`: camisetas verificadas por equipo, temporada y
   edición, con enlace directo, página de origen, MIME, licencia y atribución.
-  Solo se crea cuando el manifiesto contiene assets válidos.
+  Solo se crea cuando el manifiesto contiene camisetas válidas.
 
 Las claves repetidas se actualizan en lugar de duplicarse. Los campos vacíos
 de una respuesta nueva no borran valores existentes. Los archivos antiguos
@@ -118,17 +125,36 @@ y `player_seasons`.
 
 Las imágenes no se buscan por nombre ni se descargan automáticamente de
 NBA.com. Cada archivo debe revisarse manualmente y añadirse a
-`config/team_uniform_manifest.csv` con su título exacto de Commons, el ID de
-equipo, temporada y edición. El programa consulta la licencia y atribución
-actuales en Commons, comprueba el enlace HTTPS directo, el MIME y el contenido
-de imagen, y solo admite CC0, CC BY, CC BY-SA o dominio público. Una imagen que
-no supere las comprobaciones no sustituye datos guardados previamente.
+`config/team_uniform_manifest.csv` con su título exacto de Commons y el ID de
+entidad. `PLAYER_FACE` y `TEAM_LOGO` no llevan temporada ni edición; esos
+assets se auditan además en `media_assets.csv`.
+`JERSEY` requiere temporada y edición. El programa consulta la licencia y
+atribución actuales en Commons, comprueba el enlace HTTPS directo, el MIME y la
+firma del contenido, y solo admite CC0, CC BY, CC BY-SA o dominio público.
 
-El manifiesto versionado solo contiene cabeceras a propósito. No se ha
-preseleccionado ningún archivo ni se debe inferir la correspondencia por una
-coincidencia de nombres. La licencia del archivo no elimina la obligación de
-respetar sus condiciones de atribución ni las condiciones de uso de los datos
-de la NBA.
+Las consultas de metadatos y de imagen tienen timeout y reintentos limitados
+por `--attempts` y `--retry-delay`. Si un asset falla, se registra el error en
+`logs/nba_stats.log`, se continúa con los demás, se conservan los datos
+anteriores y la ejecución termina con código distinto de cero para que el
+Programador de tareas pueda detectar el problema.
+
+Los colores y premios se gestionan mediante estos manifiestos curados:
+
+- `config/team_branding_manifest.csv`: `TEAM_ID`, colores primario/secundario
+  como `R,G,B` (cada componente entre 0 y 255) y `SOURCE_URL` HTTPS. No se
+  inventan colores ni se copian valores sin fuente verificable.
+- `config/player_awards_manifest.csv`: `PLAYER_ID`, `SEASON_ID`,
+  `ACHIEVEMENT` y `SOURCE_URL` HTTPS. Los logros, incluidos MVP y selecciones
+  All-NBA, se introducen a partir de una fuente revisada. Se mantiene una
+  tabla detallada `player_awards.csv` y un resumen en `player_seasons.csv`.
+
+No se hacen cientos de consultas NBA de premios por jugador. Los tres
+manifiestos se versionan con cabeceras, pero sin datos preseleccionados.
+
+No se ha preseleccionado ningún archivo ni se debe inferir la correspondencia
+por una coincidencia de nombres. La licencia del archivo no elimina la
+obligación de respetar sus condiciones de atribución ni las condiciones de uso
+de los datos de la NBA.
 
 ### Ejecutar en Windows con el BAT
 
@@ -155,6 +181,9 @@ python -m nba_stats --help
 python -m nba_stats --season 2025-26 --data-dir data --attempts 3 --timeout 30 --retry-delay 2
 python -m nba_stats --skip-catalogs
 python -m nba_stats --catalogs-only --refresh-catalogs
+python -m nba_stats --catalogs-only --asset-manifest config/team_uniform_manifest.csv `
+  --team-branding-manifest config/team_branding_manifest.csv `
+  --awards-manifest config/player_awards_manifest.csv
 ```
 
 El endpoint proporciona datos estadísticos de NBA.com; tener instalada la
@@ -166,6 +195,8 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 .
 ├── .vscode/
 ├── config/
+│   ├── player_awards_manifest.csv
+│   ├── team_branding_manifest.csv
 │   └── team_uniform_manifest.csv
 ├── docs/
 │   └── DATA_DICTIONARY.md
@@ -175,6 +206,7 @@ biblioteca no determina las condiciones de reutilización de esos datos.
 │       ├── catalog_client.py
 │       ├── client.py
 │       ├── commons.py
+│       ├── curated_data.py
 │       └── storage.py
 ├── tests/
 ├── CHANGELOG.md
