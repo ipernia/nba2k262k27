@@ -2,6 +2,13 @@
 
 ## Sin publicar
 
+- Se añadieron URLs Commons verificadas de caras y escudos a las tablas por
+  temporada, con reintentos limitados, registro de fallos y preservación de
+  enlaces válidos anteriores.
+- Se añadieron columnas RGB con fuente HTTPS y logros individuales desde
+  manifiestos curados, sin generar consultas masivas por jugador.
+- Se documentaron las nuevas columnas y plantillas; se amplió la cobertura de
+  pruebas de red, validación y almacenamiento.
 - Se ampliaron los catálogos de jugadores y equipos con datos de NBA.com.
 - Se añadieron `player_seasons.csv` y `team_seasons.csv` para modelar
   relaciones y clasificaciones por temporada.

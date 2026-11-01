@@ -119,10 +119,15 @@ def test_fetches_and_normalizes_player_and_team_catalogs() -> None:
     }
     assert tables["player_seasons.csv"][1][0]["TEAM_ID"] == "1"
     assert tables["player_seasons.csv"][1][0]["SEASON_ID"] == "2025-26"
+    assert tables["player_seasons.csv"][1][0]["PLAYER_FACE_URL"] == ""
+    assert tables["player_seasons.csv"][1][0]["INDIVIDUAL_ACHIEVEMENTS"] == ""
     assert tables["teams.csv"][1][0]["TEAM_NAME"] == "Example City Wolves"
     assert tables["teams.csv"][1][0]["TEAM_ABBREVIATION"] == "EXW"
     assert tables["team_seasons.csv"][1][0]["CONFERENCE"] == "East"
     assert tables["team_seasons.csv"][1][0]["WIN_PCT"] == "0.667"
+    assert tables["team_seasons.csv"][1][0]["TEAM_LOGO_URL"] == ""
+    assert tables["team_seasons.csv"][1][0]["PRIMARY_COLOR_RGB"] == ""
+    assert tables["team_seasons.csv"][1][0]["SECONDARY_COLOR_RGB"] == ""
 
 
 def test_uses_recent_local_endpoint_cache(tmp_path: Path) -> None:
