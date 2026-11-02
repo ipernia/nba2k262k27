@@ -29,6 +29,7 @@ def _endpoint_rows(name: str, **kwargs: object) -> list[dict[str, object]]:
             {
                 "PLAYER_ID": 10,
                 "PLAYER_NAME": "Alpha Player",
+                "TEAM_ID": 1,
                 "PLAYER_HEIGHT": "6-7",
                 "PLAYER_WEIGHT": "210",
                 "COUNTRY": "USA",
@@ -116,16 +117,26 @@ def test_fetches_and_normalizes_player_and_team_catalogs() -> None:
         "DRAFT_YEAR": "2020",
         "DRAFT_ROUND": "1",
         "DRAFT_NUMBER": "10",
+        "PLAYER_FACE_URL": ("https://cdn.nba.com/headshots/nba/latest/1040x760/10.png"),
     }
     assert tables["player_seasons.csv"][1][0]["TEAM_ID"] == "1"
     assert tables["player_seasons.csv"][1][0]["SEASON_ID"] == "2025-26"
-    assert tables["player_seasons.csv"][1][0]["PLAYER_FACE_URL"] == ""
+    assert tables["player_seasons.csv"][1][0]["JERSEY_NUM"] == "7"
+    assert tables["player_seasons.csv"][1][0]["EXP"] == "5"
+    assert tables["player_seasons.csv"][1][0]["PLAYER_FACE_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/10.png"
+    )
     assert tables["player_seasons.csv"][1][0]["INDIVIDUAL_ACHIEVEMENTS"] == ""
     assert tables["teams.csv"][1][0]["TEAM_NAME"] == "Example City Wolves"
     assert tables["teams.csv"][1][0]["TEAM_ABBREVIATION"] == "EXW"
+    assert tables["teams.csv"][1][0]["TEAM_LOGO_URL"] == (
+        "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg"
+    )
     assert tables["team_seasons.csv"][1][0]["CONFERENCE"] == "East"
     assert tables["team_seasons.csv"][1][0]["WIN_PCT"] == "0.667"
-    assert tables["team_seasons.csv"][1][0]["TEAM_LOGO_URL"] == ""
+    assert tables["team_seasons.csv"][1][0]["TEAM_LOGO_URL"] == (
+        "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg"
+    )
     assert tables["team_seasons.csv"][1][0]["PRIMARY_COLOR_RGB"] == ""
     assert tables["team_seasons.csv"][1][0]["SECONDARY_COLOR_RGB"] == ""
 
@@ -170,6 +181,39 @@ def test_force_refresh_bypasses_cache(tmp_path: Path) -> None:
     fetch_nba_catalogs("2025-26", force_refresh=True, **common)
 
     assert len(calls) == 8
+
+
+def test_roster_failure_does_not_block_catalogs_or_image_urls(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+
+    def endpoint_factory(name: str, **kwargs: object) -> FakeEndpoint:
+        calls.append(name)
+        if name == "CommonTeamRoster":
+            raise TimeoutError("network timeout")
+        return FakeEndpoint(_endpoint_rows(name, **kwargs))
+
+    tables = fetch_nba_catalogs(
+        "2025-26",
+        endpoint_factory=endpoint_factory,
+        max_attempts=1,
+        retry_delay_seconds=0,
+    )
+
+    assert calls == [
+        "LeagueDashPlayerBioStats",
+        "LeagueStandings",
+        "CommonTeamRoster",
+        "TeamDetails",
+    ]
+    assert tables["players.csv"][1][0]["PLAYER_FACE_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/10.png"
+    )
+    assert tables["player_seasons.csv"][1][0]["PLAYER_FACE_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/10.png"
+    )
+    assert "se usarán los datos biográficos disponibles" in caplog.text
 
 
 def test_retries_failed_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -14,7 +14,6 @@ conservan como texto para evitar conversiones de Power BI y Excel.
 | `player_game_stats.csv` | Un jugador en un partido | `GAME_ID`, `PLAYER_ID` |
 | `team_game_stats.csv` | Un equipo en un partido | `GAME_ID`, `TEAM_ID` |
 | `player_awards.csv` | Un logro individual por jugador/temporada | `PLAYER_ID`, `SEASON_ID`, `ACHIEVEMENT` |
-| `media_assets.csv` | Cara o escudo vigente por entidad | `ASSET_TYPE`, `ENTITY_ID` |
 | `team_uniform_assets.csv` | Un asset de camiseta por equipo, temporada y edición | `TEAM_ID`, `SEASON_ID`, `EDITION` |
 
 Las claves de estadísticas por partido siguen siendo las del sistema original.
@@ -44,6 +43,8 @@ asociaciones de la plantilla y las observadas en los partidos de la temporada.
 - Biografía disponible: `BIRTHDATE`, `HEIGHT`, `WEIGHT`, `POSITION`,
   `COUNTRY`, `SCHOOL`.
 - Draft: `DRAFT_YEAR`, `DRAFT_ROUND`, `DRAFT_NUMBER`.
+- Imagen: `PLAYER_FACE_URL`, generada con el ID del jugador y el CDN público
+  de NBA.com.
 
 No se almacena `AGE`: se puede derivar desde `BIRTHDATE` con una fecha de
 referencia definida en el informe. Los campos sin fuente o sin valor se dejan
@@ -53,18 +54,22 @@ vacíos.
 
 `TEAM_ID`, `TEAM_ABBREVIATION`, `TEAM_NAME`, `CITY`, `NICKNAME`, `ARENA`,
 `ARENA_CAPACITY`, `OWNER`, `GENERAL_MANAGER`, `HEAD_COACH` y
-`D_LEAGUE_AFFILIATION`. La información organizativa procede del endpoint
-`TeamDetails`; puede cambiar con el tiempo y no es una fotografía histórica.
+`D_LEAGUE_AFFILIATION`. `TEAM_LOGO_URL` se genera a partir del ID del equipo
+con el CDN público de NBA.com. La información organizativa procede del
+endpoint `TeamDetails`; puede cambiar con el tiempo y no es una fotografía
+histórica.
 
 ### `player_seasons.csv`
 
 `PLAYER_ID`, `TEAM_ID`, `SEASON_ID`, `PLAYER_NAME`, `JERSEY_NUM`, `POSITION`,
 `HEIGHT`, `WEIGHT`, `EXP`, `SCHOOL`, `PLAYER_FACE_URL` e
-`INDIVIDUAL_ACHIEVEMENTS`. Los datos de plantilla son una consulta de la
-temporada y los equipos jugados se agregan a partir de `LeagueGameLog`. La cara
-se incorpora desde un título de Commons revisado; los logros provienen del
-manifiesto curado y se resumen separados por ` | `. Los campos sin fuente
-verificada se dejan vacíos.
+`INDIVIDUAL_ACHIEVEMENTS`. Los datos biográficos proceden de
+`LeagueDashPlayerBioStats` y, cuando está disponible, `CommonTeamRoster`; los
+equipos jugados se agregan a partir de `LeagueGameLog`. La consulta de roster
+es opcional para que su fallo no impida actualizar los catálogos. La URL de la
+cara se genera con el ID del jugador y el CDN público de NBA.com. Los logros
+provienen del manifiesto curado y se resumen separados por ` | `. Los campos
+sin fuente o sin valor se dejan vacíos.
 
 ### `team_seasons.csv`
 
@@ -72,7 +77,8 @@ verificada se dejan vacíos.
 `HOME_RECORD`, `ROAD_RECORD`, `L10`, `STREAK`, `TEAM_LOGO_URL`,
 `PRIMARY_COLOR_RGB`, `SECONDARY_COLOR_RGB` y `COLOR_SOURCE_URL`. Es una
 actualización de la clasificación disponible en el momento de la consulta, no
-una serie diaria de posiciones. Los RGB se expresan como `R,G,B` con cada
+una serie diaria de posiciones. La URL del escudo se genera con el ID del
+equipo y el CDN público de NBA.com. Los RGB se expresan como `R,G,B` con cada
 componente entre 0 y 255 y solo se aceptan junto con una URL HTTPS de fuente.
 
 ### Tablas de estadísticas
@@ -90,14 +96,6 @@ asociación revisada manualmente en el manifiesto y de metadatos consultados en
 Wikimedia Commons. No se crea una fila si falta licencia o atribución o si la
 imagen directa no supera la validación.
 
-### `media_assets.csv`
-
-Incluye `ASSET_TYPE` (`PLAYER_FACE` o `TEAM_LOGO`), `ENTITY_ID`, `FILE_TITLE`,
-`IMAGE_URL`, `PAGE_URL`, `MIME_TYPE`, `LICENSE`, `ATTRIBUTION` y `SOURCE`.
-Almacena únicamente metadatos de archivos Commons cuya licencia y URL directa
-se verificaron. Los enlaces también se copian a la fila correspondiente de
-`player_seasons.csv` o `team_seasons.csv`.
-
 ### `player_awards.csv`
 
 Incluye `PLAYER_ID`, `SEASON_ID`, `ACHIEVEMENT` y `SOURCE_URL`. Es un registro
@@ -108,12 +106,14 @@ actualización. Los logros de cada jugador-temporada también se resumen en
 ## Fuentes y límites
 
 - Estadísticas por partido: `LeagueGameLog` de NBA.com mediante `nba_api`.
-- Biografía de jugador: `LeagueDashPlayerBioStats` y `CommonTeamRoster`.
-- Datos de equipo y temporada: `TeamDetails`, `CommonTeamRoster` y
-  `LeagueStandings`.
+- Biografía de jugador: `LeagueDashPlayerBioStats` y, cuando está disponible,
+  `CommonTeamRoster`.
+- Datos de equipo y temporada: `TeamDetails` y `LeagueStandings`.
+- URLs de caras y escudos: CDN público de NBA.com; se forman a partir de
+  `PLAYER_ID` y `TEAM_ID`, respectivamente.
 - Licencia, atribución, página y URL de imagen: API de Wikimedia Commons para
-  los títulos de archivo seleccionados manualmente. El proceso comprueba el
-  servidor HTTPS, redirecciones, MIME, firma de imagen, timeout y reintentos.
+  las camisetas seleccionadas manualmente. El proceso comprueba el servidor
+  HTTPS, redirecciones, MIME, firma de imagen, timeout y reintentos.
 - Colores de equipo: valores RGB añadidos manualmente con una URL HTTPS de
   procedencia en `config/team_branding_manifest.csv`.
 - Logros individuales: entradas revisadas manualmente y enlazadas a su fuente

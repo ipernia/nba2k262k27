@@ -53,7 +53,7 @@ def fetch_nba_catalogs(
     cache_directory: Path | None = None,
     force_refresh: bool = False,
 ) -> dict[str, tuple[tuple[str, ...], list[dict[str, object]]]]:
-    """Consulta datos biográficos, equipos, standings y plantillas de una temporada.
+    """Consulta biografías, equipos, clasificaciones y plantillas de temporada.
 
     Las respuestas se preparan en memoria; el llamador puede guardarlas solo
     cuando todas las consultas NBA se completan correctamente.
@@ -102,21 +102,32 @@ def fetch_nba_catalogs(
             "NBA.com devolvió clasificaciones sin identificadores de equipo."
         )
 
-    rosters: list[dict[str, object]] = []
     team_details: list[dict[str, object]] = []
+    rosters: list[dict[str, object]] = []
+    roster_available = True
     for team_id in team_ids:
-        rosters.extend(
-            _fetch_rows(
-                endpoint_factory,
-                _ENDPOINT_NAMES["team_roster"],
-                {"team_id": team_id, "season": season},
-                max_attempts,
-                retry_delay_seconds,
-                timeout_seconds,
-                cache_directory,
-                force_refresh,
-            )
-        )
+        if roster_available:
+            try:
+                rosters.extend(
+                    _fetch_rows(
+                        endpoint_factory,
+                        _ENDPOINT_NAMES["team_roster"],
+                        {"team_id": team_id, "season": season},
+                        max_attempts,
+                        retry_delay_seconds,
+                        timeout_seconds,
+                        cache_directory,
+                        force_refresh,
+                    )
+                )
+            except NBAEnrichmentError as error:
+                _LOGGER.warning(
+                    "No se pudo consultar CommonTeamRoster para TEAM_ID %s; "
+                    "se usarán los datos biográficos disponibles: %s",
+                    team_id,
+                    error,
+                )
+                roster_available = False
         detail_rows = _fetch_rows(
             endpoint_factory,
             _ENDPOINT_NAMES["team_details"],
@@ -164,10 +175,24 @@ def fetch_nba_catalogs(
         player_rows[player_id] = _merge_nonempty(
             player_rows.get(player_id, {}), player_catalog
         )
-        player_season = _player_season_row(
+        player_season_rows[(player_id, team_id)] = _player_season_row(
             player_id, team_id, season, player_name, roster_row, bio
         )
-        player_season_rows[(player_id, team_id)] = player_season
+
+    for bio in player_bios:
+        player_id = _identifier(_value(bio, "PLAYER_ID"))
+        if player_id is None:
+            continue
+        player_name = _text(_value(bio, "PLAYER_NAME"))
+        player_rows[player_id] = _merge_nonempty(
+            player_rows.get(player_id, {}),
+            _player_catalog_row(player_id, player_name, bio, {}),
+        )
+        team_id = _identifier(_value(bio, "TEAM_ID"))
+        if team_id is not None and (player_id, team_id) not in player_season_rows:
+            player_season_rows[(player_id, team_id)] = _player_season_row(
+                player_id, team_id, season, player_name, {}, bio
+            )
 
     for team_id in team_ids:
         standing = standings_by_id.get(team_id, {})
@@ -412,12 +437,13 @@ def _player_catalog_row(
         "BIRTHDATE": _text(_value(roster, "BIRTH_DATE", "BIRTHDATE")),
         "HEIGHT": _text(_value(roster, "HEIGHT") or _value(bio, "PLAYER_HEIGHT")),
         "WEIGHT": _text(_value(roster, "WEIGHT") or _value(bio, "PLAYER_WEIGHT")),
-        "POSITION": _text(_value(roster, "POSITION")),
+        "POSITION": _text(_value(roster, "POSITION") or _value(bio, "POSITION")),
         "COUNTRY": _text(_value(bio, "COUNTRY", "COUNTRY")),
         "SCHOOL": _text(_value(roster, "SCHOOL") or _value(bio, "COLLEGE")),
         "DRAFT_YEAR": _text(_value(bio, "DRAFT_YEAR")),
         "DRAFT_ROUND": _text(_value(bio, "DRAFT_ROUND")),
         "DRAFT_NUMBER": _text(_value(bio, "DRAFT_NUMBER")),
+        "PLAYER_FACE_URL": _player_face_url(player_id),
     }
 
 
@@ -435,12 +461,12 @@ def _player_season_row(
         "SEASON_ID": season,
         "PLAYER_NAME": player_name,
         "JERSEY_NUM": _text(_value(roster, "NUM", "JERSEY_NUM")),
-        "POSITION": _text(_value(roster, "POSITION")),
+        "POSITION": _text(_value(roster, "POSITION") or _value(bio, "POSITION")),
         "HEIGHT": _text(_value(roster, "HEIGHT") or _value(bio, "PLAYER_HEIGHT")),
         "WEIGHT": _text(_value(roster, "WEIGHT") or _value(bio, "PLAYER_WEIGHT")),
         "EXP": _text(_value(roster, "EXP")),
         "SCHOOL": _text(_value(roster, "SCHOOL") or _value(bio, "COLLEGE")),
-        "PLAYER_FACE_URL": "",
+        "PLAYER_FACE_URL": _player_face_url(player_id),
         "INDIVIDUAL_ACHIEVEMENTS": "",
     }
 
@@ -470,6 +496,7 @@ def _team_catalog_row(
         "GENERAL_MANAGER": _text(_value(details, "GENERALMANAGER")),
         "HEAD_COACH": _text(_value(details, "HEADCOACH")),
         "D_LEAGUE_AFFILIATION": _text(_value(details, "DLEAGUEAFFILIATION")),
+        "TEAM_LOGO_URL": _team_logo_url(team_id),
     }
 
 
@@ -490,11 +517,19 @@ def _team_season_row(
         "ROAD_RECORD": _text(_value(standing, "ROAD")),
         "L10": _text(_value(standing, "L10")),
         "STREAK": _text(_value(standing, "STRK", "STREAK")),
-        "TEAM_LOGO_URL": "",
+        "TEAM_LOGO_URL": _team_logo_url(team_id),
         "PRIMARY_COLOR_RGB": "",
         "SECONDARY_COLOR_RGB": "",
         "COLOR_SOURCE_URL": "",
     }
+
+
+def _player_face_url(player_id: str) -> str:
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+
+
+def _team_logo_url(team_id: str) -> str:
+    return f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
 
 
 def _merge_nonempty(

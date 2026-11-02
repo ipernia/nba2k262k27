@@ -78,25 +78,26 @@ python -m nba_stats --season 2025-26
 Los archivos se guardan en `data/`, en UTF-8 con BOM:
 
 - `players.csv`: catálogo de jugadores con datos biográficos disponibles,
-  como fecha de nacimiento, altura, peso, posición, país y datos del draft.
+  como fecha de nacimiento, altura, peso, posición, país y datos del draft;
+  incluye `PLAYER_FACE_URL` generado con el ID del jugador.
 - `teams.csv`: catálogo de equipos con nombre, abreviatura, arena y datos
-  organizativos disponibles.
+  organizativos disponibles; incluye `TEAM_LOGO_URL` generado con el ID del
+  equipo.
 - `player_game_stats.csv`: estadísticas por `GAME_ID` y `PLAYER_ID`; incluye
   `TEAM_ID` para conservar el equipo por el que jugó en ese partido.
 - `team_game_stats.csv`: estadísticas por `GAME_ID` y `TEAM_ID`.
 - `player_seasons.csv`: relación jugador-equipo-temporada. La actualización
-  combina plantillas NBA con los equipos observados en los registros por
-  partido, por lo que puede representar traspasos dentro de una temporada.
-  Incluye `PLAYER_FACE_URL` y `INDIVIDUAL_ACHIEVEMENTS`.
+  combina plantillas y biografías NBA con los equipos observados en los
+  registros por partido, por lo que puede representar traspasos dentro de una
+  temporada. Si falla la consulta de plantillas, se conservan los datos de
+  biografías y las URLs de imagen. Incluye `PLAYER_FACE_URL` e
+  `INDIVIDUAL_ACHIEVEMENTS`.
 - `team_seasons.csv`: conferencia, división y clasificación acumulada por
   `TEAM_ID` y `SEASON_ID`, con `TEAM_LOGO_URL`, colores `PRIMARY_COLOR_RGB` y
   `SECONDARY_COLOR_RGB` y `COLOR_SOURCE_URL`. Los valores de clasificación
   son la última observación disponible para esa temporada.
 - `player_awards.csv`: detalle normalizado de los logros curados, jugador,
   temporada y URL de la fuente. Solo se crea si hay entradas en su manifiesto.
-- `media_assets.csv`: metadatos de licencia, atribución, página y URL
-  verificada para caras de jugadores y escudos de equipos; solo se crea si
-  alguno se valida correctamente.
 - `team_uniform_assets.csv`: camisetas verificadas por equipo, temporada y
   edición, con enlace directo, página de origen, MIME, licencia y atribución.
   Solo se crea cuando el manifiesto contiene camisetas válidas.
@@ -123,14 +124,14 @@ y `player_seasons`.
 
 ### Camisetas de Wikimedia Commons
 
-Las imágenes no se buscan por nombre ni se descargan automáticamente de
-NBA.com. Cada archivo debe revisarse manualmente y añadirse a
-`config/team_uniform_manifest.csv` con su título exacto de Commons y el ID de
-entidad. `PLAYER_FACE` y `TEAM_LOGO` no llevan temporada ni edición; esos
-assets se auditan además en `media_assets.csv`.
-`JERSEY` requiere temporada y edición. El programa consulta la licencia y
-atribución actuales en Commons, comprueba el enlace HTTPS directo, el MIME y la
-firma del contenido, y solo admite CC0, CC BY, CC BY-SA o dominio público.
+Las caras y los escudos se enlazan directamente desde el CDN público de NBA.com
+usando `PLAYER_ID` y `TEAM_ID`; no requieren búsquedas por nombre ni entradas
+manuales. Las camisetas siguen gestionándose con
+`config/team_uniform_manifest.csv`: cada archivo debe revisarse manualmente y
+añadirse con su título exacto de Commons, el ID del equipo, temporada y
+edición. El programa consulta la licencia y atribución actuales en Commons,
+comprueba el enlace HTTPS directo, el MIME y la firma del contenido, y solo
+admite CC0, CC BY, CC BY-SA o dominio público.
 
 Las consultas de metadatos y de imagen tienen timeout y reintentos limitados
 por `--attempts` y `--retry-delay`. Si un asset falla, se registra el error en
