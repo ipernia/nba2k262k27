@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nba-local-stats"
 version = "0.1.0"
-description = "Local NBA statistics collection for CSV and Power BI."
+description = "NBA season game statistics in CSV format."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

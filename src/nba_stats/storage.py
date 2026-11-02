@@ -6,7 +6,8 @@ import csv
 import math
 import os
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from numbers import Integral, Real
 from pathlib import Path
 from typing import TypeAlias
 
@@ -15,11 +16,6 @@ CSVRow: TypeAlias = dict[str, str]
 RowKey: TypeAlias = tuple[str, ...]
 RowsByKey: TypeAlias = dict[RowKey, CSVRow]
 PreparedTable: TypeAlias = tuple[Path, list[str], RowsByKey]
-
-
-class CSVStorageError(RuntimeError):
-    """Error al validar o guardar un archivo CSV de estadísticas."""
-
 
 _PLAYER_REQUIRED_COLUMNS = (
     "GAME_ID",
@@ -35,8 +31,17 @@ _TEAM_REQUIRED_COLUMNS = (
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
 )
-_TEAM_DIMENSION_COLUMNS = ("TEAM_ID", "TEAM_ABBREVIATION", "TEAM_NAME")
-_PLAYER_DIMENSION_COLUMNS = ("PLAYER_ID", "PLAYER_NAME")
+_PLAYER_CATALOG_COLUMNS = ("PLAYER_ID", "PLAYER_NAME", "PLAYER_FACE_URL")
+_TEAM_CATALOG_COLUMNS = (
+    "TEAM_ID",
+    "TEAM_ABBREVIATION",
+    "TEAM_NAME",
+    "TEAM_LOGO_URL",
+)
+
+
+class CSVStorageError(RuntimeError):
+    """Error al validar o guardar un archivo CSV de estadísticas."""
 
 
 def save_game_logs(
@@ -44,174 +49,91 @@ def save_game_logs(
     player_rows: Sequence[Mapping[str, object]],
     team_rows: Sequence[Mapping[str, object]],
 ) -> dict[str, int]:
-    """Acumula cuatro CSV relacionados para el modelo de Power BI.
-
-    Escribe los catálogos ``players.csv`` y ``teams.csv``, y las tablas de
-    estadísticas ``player_game_stats.csv`` y ``team_game_stats.csv``. La clave
-    de jugador por partido incluye ``TEAM_ID`` como relación histórica con el
-    equipo para el que jugó. Los antiguos ``*_game_logs.csv`` se importan si
-    todavía no existe su nuevo archivo correspondiente; nunca se eliminan.
-
-    Returns:
-        Número acumulado de filas de estadísticas de jugadores y equipos.
-
-    Raises:
-        CSVStorageError: Si los registros o CSV existentes no son válidos, o
-            si no se pueden escribir los archivos.
-    """
+    """Acumula catálogos de entidades y estadísticas de partidos en cuatro CSV."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
     teams = _validate_rows(team_rows, _TEAM_REQUIRED_COLUMNS, "equipos")
 
-    table_specs: tuple[
-        tuple[
-            str,
-            tuple[str, ...],
-            str,
-            tuple[str, ...],
-            str,
-            str,
-            tuple[str, ...],
-        ],
-        ...,
-    ] = (
-        (
-            "teams.csv",
+    player_catalog: RowsByKey = {}
+    for row in players:
+        player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
+        _merge_row(
+            player_catalog,
+            list(_PLAYER_CATALOG_COLUMNS),
+            {
+                "PLAYER_ID": player_id,
+                "PLAYER_NAME": row["PLAYER_NAME"],
+                "PLAYER_FACE_URL": (
+                    f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+                ),
+            },
+            ("PLAYER_ID",),
+        )
+
+    team_catalog: RowsByKey = {}
+    for row in teams:
+        team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+        _merge_row(
+            team_catalog,
+            list(_TEAM_CATALOG_COLUMNS),
+            {
+                "TEAM_ID": team_id,
+                "TEAM_ABBREVIATION": row["TEAM_ABBREVIATION"],
+                "TEAM_NAME": row["TEAM_NAME"],
+                "TEAM_LOGO_URL": (
+                    f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
+                ),
+            },
             ("TEAM_ID",),
-            "team_game_logs.csv",
-            ("GAME_ID", "TEAM_ID"),
-            "T",
-            "teams",
-            _TEAM_DIMENSION_COLUMNS,
-        ),
+        )
+
+    player_stats = [
+        {
+            column: value
+            for column, value in row.items()
+            if column not in {"PLAYER_NAME", "TEAM_ABBREVIATION", "TEAM_NAME"}
+        }
+        for row in players
+    ]
+    team_stats = [
+        {
+            column: value
+            for column, value in row.items()
+            if column not in {"TEAM_ABBREVIATION", "TEAM_NAME"}
+        }
+        for row in teams
+    ]
+
+    tables = (
         (
             "players.csv",
             ("PLAYER_ID",),
-            "player_game_logs.csv",
-            ("GAME_ID", "PLAYER_ID"),
-            "P",
-            "players",
-            _PLAYER_DIMENSION_COLUMNS,
+            list(player_catalog.values()),
+            _PLAYER_CATALOG_COLUMNS,
         ),
         (
-            "team_game_stats.csv",
-            ("GAME_ID", "TEAM_ID"),
-            "team_game_logs.csv",
-            ("GAME_ID", "TEAM_ID"),
-            "T",
-            "team_stats",
-            (),
+            "teams.csv",
+            ("TEAM_ID",),
+            list(team_catalog.values()),
+            _TEAM_CATALOG_COLUMNS,
         ),
-        (
-            "player_game_stats.csv",
-            ("GAME_ID", "PLAYER_ID"),
-            "player_game_logs.csv",
-            ("GAME_ID", "PLAYER_ID"),
-            "P",
-            "player_stats",
-            (),
-        ),
+        ("player_game_stats.csv", ("GAME_ID", "PLAYER_ID"), player_stats, None),
+        ("team_game_stats.csv", ("GAME_ID", "TEAM_ID"), team_stats, None),
     )
-
-    def project(kind: str, row: Mapping[str, object], columns: tuple[str, ...]) -> Row:
-        if columns:
-            return {column: row[column] for column in columns}
-        excluded = (
-            {"TEAM_ABBREVIATION", "TEAM_NAME"}
-            if kind == "T"
-            else {"PLAYER_NAME", "TEAM_ABBREVIATION", "TEAM_NAME"}
-        )
-        return {
-            column: value for column, value in row.items() if column not in excluded
-        }
-
-    inputs: dict[str, list[Row]] = {
-        "P": players,
-        "T": teams,
-    }
-    inputs["teams"] = [
-        project("T", row, _TEAM_DIMENSION_COLUMNS) for row in [*players, *teams]
-    ]
-    inputs["players"] = [
-        project("P", row, _PLAYER_DIMENSION_COLUMNS) for row in players
-    ]
-    inputs["team_stats"] = [project("T", row, ()) for row in teams]
-    inputs["player_stats"] = [project("P", row, ()) for row in players]
-
     prepared: list[PreparedTable] = []
-    accumulated_counts: dict[str, int] = {"P": 0, "T": 0}
-    for (
-        filename,
-        key_columns,
-        legacy_filename,
-        legacy_keys,
-        kind,
-        table_name,
-        projection,
-    ) in table_specs:
-        legacy_path = data_directory / legacy_filename
-        prepared_table, row_count = _prepare_table(
+    counts = {"P": 0, "T": 0}
+    for filename, key_columns, rows, fixed_columns in tables:
+        table = _prepare_table(
             data_directory / filename,
             key_columns,
-            inputs[table_name],
-            legacy_path,
-            legacy_keys,
-            lambda row, table_kind=kind, table_projection=projection: project(
-                table_kind, row, table_projection
-            ),
+            rows,
+            fixed_columns,
         )
-        if prepared_table is not None:
-            prepared.append(prepared_table)
-        if kind in accumulated_counts:
-            accumulated_counts[kind] = row_count
-
-    _write_tables(prepared)
-    return accumulated_counts
-
-
-def save_catalog_tables(
-    data_directory: Path,
-    tables: Mapping[str, tuple[tuple[str, ...], Sequence[Mapping[str, object]]]],
-) -> dict[str, int]:
-    """Actualiza catálogos con clave única, preservando datos ante valores vacíos.
-
-    Todos los CSV se preparan antes de escribir ninguno. Cada archivo se escribe
-    primero a un temporal UTF-8-BOM y luego se sustituye de forma atómica.
-    """
-    prepared: list[PreparedTable] = []
-    counts: dict[str, int] = {}
-    for filename, (key_columns, rows) in tables.items():
-        if Path(filename).name != filename or not filename.lower().endswith(".csv"):
-            raise CSVStorageError(f"Nombre de catálogo inválido: {filename}")
-        if not key_columns:
-            raise CSVStorageError(f"El catálogo {filename} requiere una clave.")
-        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-            raise CSVStorageError(f"Las filas de {filename} deben ser una secuencia.")
-
-        path = data_directory / filename
-        headers, rows_by_key = _read_existing(path, key_columns)
-        for index, row in enumerate(rows, start=1):
-            if not isinstance(row, Mapping):
-                raise CSVStorageError(f"La fila {index} de {filename} no es un mapa.")
-            if any(not isinstance(column, str) or not column for column in row):
-                raise CSVStorageError(
-                    f"El catálogo {filename} tiene un nombre de columna inválido."
-                )
-            missing = [column for column in key_columns if column not in row]
-            if missing:
-                raise CSVStorageError(
-                    f"La fila {index} de {filename} no tiene las claves: "
-                    + ", ".join(missing)
-                )
-            _merge_row(rows_by_key, headers, row, key_columns)
-
-        counts[filename] = len(rows_by_key)
-        if rows or path.exists():
-            if not headers:
-                raise CSVStorageError(
-                    f"No se puede escribir {filename} sin columnas de cabecera."
-                )
-            prepared.append((path, headers, rows_by_key))
-
+        if table is not None:
+            prepared.append(table)
+            if filename == "player_game_stats.csv":
+                counts["P"] = len(table[2])
+            elif filename == "team_game_stats.csv":
+                counts["T"] = len(table[2])
     _write_tables(prepared)
     return counts
 
@@ -224,6 +146,9 @@ def _validate_rows(
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         raise CSVStorageError("Los registros deben ser una secuencia de filas.")
     validated: list[Row] = []
+    key_columns = (
+        ("GAME_ID", "PLAYER_ID") if kind == "jugadores" else ("GAME_ID", "TEAM_ID")
+    )
     for index, row in enumerate(rows, start=1):
         if not isinstance(row, Mapping):
             raise CSVStorageError(f"El registro {index} de {kind} no es un mapa.")
@@ -237,10 +162,12 @@ def _validate_rows(
                 f"El registro {index} de {kind} no tiene las columnas requeridas: "
                 + ", ".join(missing)
             )
-        _row_key(
-            row, required_columns[:2] if kind == "jugadores" else ("GAME_ID", "TEAM_ID")
-        )
-        validated.append(dict(row))
+        _row_key(row, key_columns)
+        normalized = dict(row)
+        id_column = "PLAYER_ID" if kind == "jugadores" else "TEAM_ID"
+        normalized[id_column] = _numeric_identifier(row[id_column], id_column)
+        normalized["TEAM_ID"] = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+        validated.append(normalized)
     return validated
 
 
@@ -248,33 +175,24 @@ def _prepare_table(
     path: Path,
     key_columns: tuple[str, ...],
     incoming_rows: Sequence[Mapping[str, object]],
-    legacy_path: Path,
-    legacy_key_columns: tuple[str, ...],
-    transform: Callable[[Mapping[str, object]], Row],
-) -> tuple[PreparedTable | None, int]:
-    migrate_legacy = not path.exists() and legacy_path.exists()
-    if path.exists():
-        headers, existing_rows = _read_existing(path, key_columns)
-    elif migrate_legacy:
-        _, legacy_rows = _read_existing(legacy_path, legacy_key_columns)
-        headers = []
-        existing_rows = {}
-        for legacy_row in legacy_rows.values():
-            transformed = transform(legacy_row)
-            _merge_row(existing_rows, headers, transformed, key_columns)
-    else:
-        headers, existing_rows = [], {}
+    fixed_columns: tuple[str, ...] | None,
+) -> PreparedTable | None:
+    headers, existing_rows = _read_existing(path, key_columns)
+    if fixed_columns is not None:
+        headers = list(fixed_columns)
+        existing_rows = {
+            key: {column: row.get(column, "") for column in fixed_columns}
+            for key, row in existing_rows.items()
+        }
 
     for row in incoming_rows:
-        if any(not isinstance(column, str) or not column for column in row):
-            raise CSVStorageError("Las columnas deben tener nombres válidos.")
         _merge_row(existing_rows, headers, row, key_columns)
 
-    if not incoming_rows and not migrate_legacy:
-        return None, len(existing_rows)
-    if not existing_rows:
-        return None, 0
-    return (path, headers, existing_rows), len(existing_rows)
+    if not incoming_rows and not path.exists():
+        return None
+    if not headers:
+        return None
+    return path, headers, existing_rows
 
 
 def _merge_row(
@@ -287,8 +205,7 @@ def _merge_row(
     for column in row:
         if column not in headers:
             headers.append(column)
-    existing = rows_by_key.get(key, {})
-    merged = dict(existing)
+    merged = dict(rows_by_key.get(key, {}))
     for column in headers:
         value = _serialize_value(row.get(column, ""))
         if value.strip():
@@ -305,6 +222,23 @@ def _row_key(row: Mapping[str, object], key_columns: tuple[str, ...]) -> RowKey:
             f"Las claves {', '.join(key_columns)} no pueden estar vacías."
         )
     return key
+
+
+def _numeric_identifier(value: object, column: str) -> str:
+    if isinstance(value, bool) or value is None:
+        raise CSVStorageError(f"{column} debe ser un identificador numérico.")
+    if isinstance(value, Integral):
+        identifier = str(int(value))
+    elif isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise CSVStorageError(f"{column} debe ser un identificador numérico.")
+        identifier = str(int(number))
+    else:
+        identifier = str(value).strip()
+    if not identifier.isdigit():
+        raise CSVStorageError(f"{column} debe ser un identificador numérico.")
+    return identifier
 
 
 def _read_existing(
