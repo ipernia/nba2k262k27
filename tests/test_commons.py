@@ -247,20 +247,19 @@ def test_loads_curated_jersey_manifest(tmp_path: Path) -> None:
     ]
 
 
-def test_loads_player_face_and_team_logo_entries(tmp_path: Path) -> None:
+@pytest.mark.parametrize("asset_type", ["PLAYER_FACE", "TEAM_LOGO"])
+def test_rejects_player_faces_and_team_logos_in_commons_manifest(
+    tmp_path: Path, asset_type: str
+) -> None:
     path = tmp_path / "manifest.csv"
     path.write_text(
         "ASSET_TYPE,ENTITY_ID,SEASON_ID,EDITION,FILE_TITLE\n"
-        "PLAYER_FACE,23,,,Player_face.jpg\n"
-        "TEAM_LOGO,1610612747,,,Team_logo.png\n",
+        f"{asset_type},23,,,Example.png\n",
         encoding="utf-8",
     )
 
-    rows = load_asset_manifest(path)
-
-    assert [row["ASSET_TYPE"] for row in rows] == ["PLAYER_FACE", "TEAM_LOGO"]
-    assert rows[0]["FILE_TITLE"] == "File:Player face.jpg"
-    assert rows[1]["FILE_TITLE"] == "File:Team logo.png"
+    with pytest.raises(CommonsAssetError, match="URLs de NBA.com"):
+        load_asset_manifest(path)
 
 
 @pytest.mark.parametrize(

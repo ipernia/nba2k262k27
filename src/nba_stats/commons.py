@@ -242,9 +242,10 @@ def load_asset_manifest(path: Path) -> list[dict[str, str]]:
                     )
                 row = {key: (value or "").strip() for key, value in raw_row.items()}
                 asset_type = row["ASSET_TYPE"].upper()
-                if asset_type not in {"JERSEY", "PLAYER_FACE", "TEAM_LOGO"}:
+                if asset_type != "JERSEY":
                     raise CommonsAssetError(
-                        f"Tipo de asset no admitido en {path}, línea {index}."
+                        f"Solo se admiten camisetas (JERSEY) en {path}, "
+                        f"línea {index}; caras y escudos usan URLs de NBA.com."
                     )
                 if not row["ENTITY_ID"] or not row["FILE_TITLE"]:
                     raise CommonsAssetError(
@@ -254,20 +255,14 @@ def load_asset_manifest(path: Path) -> list[dict[str, str]]:
                     raise CommonsAssetError(
                         f"ENTITY_ID inválido ({path}, línea {index})."
                     )
-                if asset_type == "JERSEY":
-                    if (
-                        not re.fullmatch(r"\d{4}-\d{2}", row["SEASON_ID"])
-                        or (int(row["SEASON_ID"][:4]) + 1) % 100
-                        != int(row["SEASON_ID"][-2:])
-                        or not row["EDITION"]
-                    ):
-                        raise CommonsAssetError(
-                            f"SEASON_ID o EDITION inválido ({path}, línea {index})."
-                        )
-                elif row["SEASON_ID"] or row["EDITION"]:
+                if (
+                    not re.fullmatch(r"\d{4}-\d{2}", row["SEASON_ID"])
+                    or (int(row["SEASON_ID"][:4]) + 1) % 100
+                    != int(row["SEASON_ID"][-2:])
+                    or not row["EDITION"]
+                ):
                     raise CommonsAssetError(
-                        f"{asset_type} no debe tener temporada ni edición "
-                        f"({path}, línea {index})."
+                        f"SEASON_ID o EDITION inválido ({path}, línea {index})."
                     )
                 key = (
                     asset_type,

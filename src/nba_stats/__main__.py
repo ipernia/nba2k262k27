@@ -41,14 +41,18 @@ def _include_logged_player_teams(
     season: str,
 ) -> None:
     """Incluye traspasos observados en los registros de partidos de la temporada."""
-    key_columns, roster_rows = catalogs["player_seasons.csv"]
+    key_columns, player_season_rows = catalogs["player_seasons.csv"]
     merged = {
         (
             str(row["PLAYER_ID"]),
             str(row["TEAM_ID"]),
             str(row["SEASON_ID"]),
         ): row
-        for row in roster_rows
+        for row in player_season_rows
+    }
+    player_face_urls = {
+        str(row["PLAYER_ID"]): row.get("PLAYER_FACE_URL", "")
+        for row in catalogs["players.csv"][1]
     }
     for game_row in player_game_rows:
         player_id = _normalize_identifier(game_row.get("PLAYER_ID"))
@@ -62,6 +66,7 @@ def _include_logged_player_teams(
                 "TEAM_ID": team_id,
                 "SEASON_ID": season,
                 "PLAYER_NAME": game_row.get("PLAYER_NAME", ""),
+                "PLAYER_FACE_URL": player_face_urls.get(player_id, ""),
             }
     catalogs["player_seasons.csv"] = (key_columns, list(merged.values()))
 
@@ -122,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         "--asset-manifest",
         type=Path,
         default=Path("config") / "team_uniform_manifest.csv",
-        help="Manifiesto de camisetas, caras y escudos Commons.",
+        help="Manifiesto de camisetas Commons.",
     )
     parser.add_argument(
         "--team-branding-manifest",
@@ -210,24 +215,14 @@ def main(argv: list[str] | None = None) -> int:
             catalog_counts = save_catalog_tables(args.data_dir, catalogs)
 
             known_team_ids = {str(row["TEAM_ID"]) for row in catalogs["teams.csv"][1]}
-            known_player_ids = {
-                str(row["PLAYER_ID"]) for row in catalogs["players.csv"][1]
-            }
-            verified_asset_rows: list[dict[str, object]] = []
             jersey_rows: list[dict[str, object]] = []
-            updated_player_seasons = catalogs["player_seasons.csv"][1]
-            updated_team_seasons = catalogs["team_seasons.csv"][1]
             for manifest_row in asset_manifest_rows:
-                asset_type = manifest_row["ASSET_TYPE"]
                 entity_id = manifest_row["ENTITY_ID"]
-                if asset_type == "JERSEY" and manifest_row["SEASON_ID"] != args.season:
+                if manifest_row["SEASON_ID"] != args.season:
                     continue
-                known_ids = (
-                    known_player_ids if asset_type == "PLAYER_FACE" else known_team_ids
-                )
-                if entity_id not in known_ids:
+                if entity_id not in known_team_ids:
                     message = (
-                        f"{asset_type} para ENTITY_ID {entity_id} no corresponde "
+                        f"JERSEY para TEAM_ID {entity_id} no corresponde "
                         f"a una entidad consultada para {args.season}."
                     )
                     logging.error(message)
@@ -243,72 +238,31 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 except CommonsAssetError as error:
                     message = (
-                        f"{asset_type} {entity_id} "
-                        f"({manifest_row['FILE_TITLE']}): {error}"
+                        f"JERSEY {entity_id} ({manifest_row['FILE_TITLE']}): {error}"
                     )
                     logging.error("No se pudo validar el asset Commons: %s", message)
                     print(f"Error en asset Commons: {message}", file=sys.stderr)
                     asset_errors.append(message)
                     continue
 
-                if asset_type == "PLAYER_FACE":
-                    verified_asset_rows.append(
-                        {
-                            "ASSET_TYPE": asset_type,
-                            "ENTITY_ID": entity_id,
-                            "FILE_TITLE": asset.file_title,
-                            "IMAGE_URL": asset.image_url,
-                            "PAGE_URL": asset.page_url,
-                            "MIME_TYPE": asset.mime_type,
-                            "LICENSE": asset.license_name,
-                            "ATTRIBUTION": asset.attribution,
-                            "SOURCE": "Wikimedia Commons",
-                        }
-                    )
-                    for player_season in updated_player_seasons:
-                        if player_season["PLAYER_ID"] == entity_id:
-                            player_season["PLAYER_FACE_URL"] = asset.image_url
-                elif asset_type == "TEAM_LOGO":
-                    verified_asset_rows.append(
-                        {
-                            "ASSET_TYPE": asset_type,
-                            "ENTITY_ID": entity_id,
-                            "FILE_TITLE": asset.file_title,
-                            "IMAGE_URL": asset.image_url,
-                            "PAGE_URL": asset.page_url,
-                            "MIME_TYPE": asset.mime_type,
-                            "LICENSE": asset.license_name,
-                            "ATTRIBUTION": asset.attribution,
-                            "SOURCE": "Wikimedia Commons",
-                        }
-                    )
-                    for team_season in updated_team_seasons:
-                        if team_season["TEAM_ID"] == entity_id:
-                            team_season["TEAM_LOGO_URL"] = asset.image_url
-                else:
-                    jersey_rows.append(
-                        {
-                            "TEAM_ID": entity_id,
-                            "SEASON_ID": manifest_row["SEASON_ID"],
-                            "EDITION": manifest_row["EDITION"],
-                            "FILE_TITLE": asset.file_title,
-                            "IMAGE_URL": asset.image_url,
-                            "PAGE_URL": asset.page_url,
-                            "MIME_TYPE": asset.mime_type,
-                            "LICENSE": asset.license_name,
-                            "ATTRIBUTION": asset.attribution,
-                            "SOURCE": "Wikimedia Commons",
-                        }
-                    )
+                jersey_rows.append(
+                    {
+                        "TEAM_ID": entity_id,
+                        "SEASON_ID": manifest_row["SEASON_ID"],
+                        "EDITION": manifest_row["EDITION"],
+                        "FILE_TITLE": asset.file_title,
+                        "IMAGE_URL": asset.image_url,
+                        "PAGE_URL": asset.page_url,
+                        "MIME_TYPE": asset.mime_type,
+                        "LICENSE": asset.license_name,
+                        "ATTRIBUTION": asset.attribution,
+                        "SOURCE": "Wikimedia Commons",
+                    }
+                )
 
             supplementary_tables: dict[
                 str, tuple[tuple[str, ...], list[dict[str, object]]]
             ] = {}
-            if verified_asset_rows:
-                supplementary_tables["media_assets.csv"] = (
-                    ("ASSET_TYPE", "ENTITY_ID"),
-                    verified_asset_rows,
-                )
             if jersey_rows:
                 supplementary_tables["team_uniform_assets.csv"] = (
                     ("TEAM_ID", "SEASON_ID", "EDITION"),
@@ -318,21 +272,6 @@ def main(argv: list[str] | None = None) -> int:
                 catalog_counts.update(
                     save_catalog_tables(args.data_dir, supplementary_tables)
                 )
-            catalog_counts.update(
-                save_catalog_tables(
-                    args.data_dir,
-                    {
-                        "player_seasons.csv": (
-                            ("PLAYER_ID", "TEAM_ID", "SEASON_ID"),
-                            updated_player_seasons,
-                        ),
-                        "team_seasons.csv": (
-                            ("TEAM_ID", "SEASON_ID"),
-                            updated_team_seasons,
-                        ),
-                    },
-                )
-            )
         except (
             CommonsAssetError,
             NBAEnrichmentError,
