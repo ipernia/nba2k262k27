@@ -19,6 +19,7 @@ htmlcov/
 # Local data and logs
 data/
 logs/
+TODO.md
 
 # Local secrets and environment files
 .env
