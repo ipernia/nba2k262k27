@@ -3,8 +3,8 @@
 Descarga las estadísticas de los partidos de una temporada NBA y las acumula
 en cuatro CSV UTF-8 con BOM, listos para Excel o Power BI:
 
-- `players.csv`: `PLAYER_ID`, `PLAYER_NAME`, `PLAYER_FACE_URL`.
-- `teams.csv`: `TEAM_ID`, `TEAM_ABBREVIATION`, `TEAM_NAME`, `TEAM_LOGO_URL`.
+- `players.csv`: catálogo de jugadores.
+- `teams.csv`: catálogo de equipos.
 - `player_game_stats.csv`: estadísticas por partido y jugador, incluido
   `TEAM_ID` para conservar el equipo por el que jugó.
 - `team_game_stats.csv`: estadísticas por partido y equipo.
@@ -17,7 +17,8 @@ Las URLs de imagen se construyen directamente con los IDs de NBA.com:
 No se descargan imágenes ni se consultan camisetas, colores, premios o
 metadatos de licencia. Los catálogos de jugadores y equipos se forman con las
 entidades que aparecen en los registros de partidos de la temporada; no
-incluyen jugadores que todavía no hayan participado en un partido.
+incluyen jugadores que todavía no hayan participado en un partido, salvo que
+se incorporen desde un CSV de temporadas existente.
 
 ## Requisitos
 
@@ -59,9 +60,28 @@ python -m nba_stats --season 2026-27
 
 Los registros se acumulan por sus claves de partido. Volver a ejecutar el
 comando actualiza las filas existentes sin duplicarlas. Los nuevos datos no
-borran los valores previos cuando llegan vacíos. Los CSV antiguos que ya
-existan en `data/` se conservan; esta versión solo crea o actualiza los cuatro
-archivos listados arriba.
+borran los valores previos cuando llegan vacíos. La ejecución crea o actualiza
+los cuatro CSV de partidos y catálogos descritos arriba.
+
+Si ya existen `player_seasons.csv` o `team_seasons.csv`, también se normalizan
+al guardar registros: los datos propios de cada jugador o equipo se trasladan
+a `players.csv` o `teams.csv`, respectivamente, y en los CSV de temporadas se
+conservan únicamente los campos estacionales. El programa actual no descarga
+ni crea esos dos CSV.
+
+Los catálogos contienen:
+
+- `players.csv`: `PLAYER_ID`, `PLAYER_NAME`, `PLAYER_FACE_URL`, `HEIGHT`,
+  `WEIGHT`, `SCHOOL`, `INDIVIDUAL_ACHIEVEMENTS`.
+- `teams.csv`: `TEAM_ID`, `TEAM_ABBREVIATION`, `TEAM_NAME`, `TEAM_LOGO_URL`,
+  `PRIMARY_COLOR_RGB`, `SECONDARY_COLOR_RGB`, `COLOR_SOURCE_URL`.
+
+Los CSV de temporadas, cuando existen, contienen:
+
+- `player_seasons.csv`: `PLAYER_ID`, `TEAM_ID`, `SEASON_ID`, `JERSEY_NUM`,
+  `POSITION`, `EXP`.
+- `team_seasons.csv`: `TEAM_ID`, `SEASON_ID`, `CONFERENCE`, `DIVISION`,
+  `WINS`, `LOSSES`, `WIN_PCT`, `HOME_RECORD`, `ROAD_RECORD`, `L10`, `STREAK`.
 
 Opciones disponibles:
 
@@ -76,10 +96,20 @@ excluidos de Git.
 
 ## Comprobaciones
 
+Con el entorno virtual activado:
+
 ```powershell
 python -m pytest
 python -m ruff check .
 python -m ruff format --check .
+```
+
+O sin activarlo, usando explícitamente su intérprete:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check .
 ```
 
 ## Ejecución diaria en Windows
