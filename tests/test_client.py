@@ -30,6 +30,9 @@ def _game_rows(player_or_team: str) -> list[dict[str, object]]:
         return [
             {
                 "GAME_ID": "001",
+                "SEASON_ID": "2026-27",
+                "GAME_DATE": "2026-10-20",
+                "MATCHUP": "TST vs. OPP",
                 "PLAYER_ID": 23,
                 "PLAYER_NAME": "Player One",
                 "TEAM_ID": 1,
@@ -41,11 +44,26 @@ def _game_rows(player_or_team: str) -> list[dict[str, object]]:
     return [
         {
             "GAME_ID": "001",
+            "SEASON_ID": "2026-27",
+            "GAME_DATE": "2026-10-20",
+            "MATCHUP": "TST vs. OPP",
             "TEAM_ID": 1,
             "TEAM_ABBREVIATION": "TST",
             "TEAM_NAME": "Test Team",
             "PTS": 100,
-        }
+            "VIDEO_AVAILABLE": 1,
+        },
+        {
+            "GAME_ID": "001",
+            "SEASON_ID": "2026-27",
+            "GAME_DATE": "2026-10-20",
+            "MATCHUP": "OPP @ TST",
+            "TEAM_ID": 2,
+            "TEAM_ABBREVIATION": "OPP",
+            "TEAM_NAME": "Opponent Team",
+            "PTS": 98,
+            "VIDEO_AVAILABLE": 1,
+        },
     ]
 
 
@@ -131,6 +149,23 @@ def test_rejects_response_missing_identifier() -> None:
         )
 
 
+def test_rejects_team_response_missing_matchup() -> None:
+    rows = [
+        {key: value for key, value in row.items() if key != "MATCHUP"}
+        for row in _game_rows("T")
+    ]
+
+    with pytest.raises(NBAStatsError, match="MATCHUP"):
+        fetch_league_game_logs(
+            "2026-27",
+            endpoint_factory=lambda **kwargs: FakeEndpoint(
+                rows
+                if kwargs["player_or_team_abbreviation"] == "T"
+                else _game_rows("P")
+            ),
+        )
+
+
 def test_rejects_response_without_data_frames() -> None:
     class EmptyEndpoint:
         def get_data_frames(self) -> list[FakeFrame]:
@@ -178,6 +213,7 @@ def test_main_updates_only_core_csvs_from_game_logs(
     assert {path.name for path in data_directory.glob("*.csv")} == {
         "players.csv",
         "teams.csv",
+        "games.csv",
         "player_game_stats.csv",
         "team_game_stats.csv",
     }

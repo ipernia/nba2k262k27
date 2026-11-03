@@ -27,10 +27,23 @@ _PLAYER_REQUIRED_COLUMNS = (
 )
 _TEAM_REQUIRED_COLUMNS = (
     "GAME_ID",
+    "SEASON_ID",
+    "GAME_DATE",
+    "MATCHUP",
     "TEAM_ID",
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
 )
+_GAME_COLUMNS = frozenset({"SEASON_ID", "GAME_DATE", "MATCHUP", "VIDEO_AVAILABLE"})
+_GAME_CATALOG_COLUMNS = (
+    "GAME_ID",
+    "SEASON_ID",
+    "GAME_DATE",
+    "TEAM_ID_1",
+    "TEAM_ID_2",
+    "VIDEO_AVAILABLE",
+)
+_DEFAULT_PLAYER_FACE_URL = "assets/player_silhouette.png"
 _PLAYER_CATALOG_COLUMNS = (
     "PLAYER_ID",
     "PLAYER_NAME",
@@ -91,6 +104,18 @@ def save_game_logs(
         _prepare_existing_seasons(data_directory)
     )
     player_catalog: RowsByKey = {}
+    existing_player_path = data_directory / "players.csv"
+    if existing_player_path.exists():
+        _, existing_players = _read_existing(existing_player_path, ("PLAYER_ID",))
+        for row in existing_players.values():
+            if not row.get("PLAYER_FACE_URL", "").strip():
+                row["PLAYER_FACE_URL"] = _DEFAULT_PLAYER_FACE_URL
+            _merge_row(
+                player_catalog,
+                list(_PLAYER_CATALOG_COLUMNS),
+                {column: row.get(column, "") for column in _PLAYER_CATALOG_COLUMNS},
+                ("PLAYER_ID",),
+            )
     for row in player_season_entities:
         _merge_row(
             player_catalog,
@@ -153,6 +178,25 @@ def save_game_logs(
         }
         for row in teams
     ]
+    existing_team_stats: list[CSVRow] = []
+    team_stats_path = data_directory / "team_game_stats.csv"
+    if team_stats_path.exists():
+        _, existing_team_stats_by_key = _read_existing(
+            team_stats_path, ("GAME_ID", "TEAM_ID")
+        )
+        existing_team_stats = list(existing_team_stats_by_key.values())
+    if teams:
+        incoming_game_ids = {_row_key(row, ("GAME_ID",))[0] for row in teams}
+        existing_team_stats = [
+            row
+            for row in existing_team_stats
+            if _row_key(row, ("GAME_ID",))[0] in incoming_game_ids
+        ]
+        games = _build_games(teams, existing_team_stats)
+    elif not (data_directory / "games.csv").exists():
+        games = _build_games([], existing_team_stats)
+    else:
+        games = []
 
     tables = (
         (
@@ -160,24 +204,46 @@ def save_game_logs(
             ("PLAYER_ID",),
             list(player_catalog.values()),
             _PLAYER_CATALOG_COLUMNS,
+            frozenset(),
         ),
         (
             "teams.csv",
             ("TEAM_ID",),
             list(team_catalog.values()),
             _TEAM_CATALOG_COLUMNS,
+            frozenset(),
         ),
-        ("player_game_stats.csv", ("GAME_ID", "PLAYER_ID"), player_stats, None),
-        ("team_game_stats.csv", ("GAME_ID", "TEAM_ID"), team_stats, None),
+        (
+            "games.csv",
+            ("GAME_ID",),
+            games,
+            _GAME_CATALOG_COLUMNS,
+            frozenset(),
+        ),
+        (
+            "player_game_stats.csv",
+            ("GAME_ID", "PLAYER_ID"),
+            player_stats,
+            None,
+            _GAME_COLUMNS,
+        ),
+        (
+            "team_game_stats.csv",
+            ("GAME_ID", "TEAM_ID"),
+            team_stats,
+            None,
+            _GAME_COLUMNS,
+        ),
     )
     prepared: list[PreparedTable] = []
     counts = {"P": 0, "T": 0}
-    for filename, key_columns, rows, fixed_columns in tables:
+    for filename, key_columns, rows, fixed_columns, excluded_columns in tables:
         table = _prepare_table(
             data_directory / filename,
             key_columns,
             rows,
             fixed_columns,
+            excluded_columns,
         )
         if table is not None:
             prepared.append(table)
@@ -257,6 +323,82 @@ def _prepare_existing_seasons(
     return list(player_entities.values()), list(team_entities.values()), season_tables
 
 
+def _build_games(
+    team_rows: Sequence[Mapping[str, object]],
+    existing_team_rows: Sequence[Mapping[str, object]],
+) -> list[Row]:
+    rows_by_key: RowsByKey = {}
+    headers: list[str] = []
+    for row in existing_team_rows:
+        _merge_row(rows_by_key, headers, row, ("GAME_ID", "TEAM_ID"))
+    for row in team_rows:
+        _merge_row(rows_by_key, headers, row, ("GAME_ID", "TEAM_ID"))
+
+    games_by_id: dict[str, list[Mapping[str, object]]] = {}
+    for row in rows_by_key.values():
+        game_id = _serialize_value(row["GAME_ID"]).strip()
+        games_by_id.setdefault(game_id, []).append(row)
+
+    games: list[Row] = []
+    for game_id, rows in games_by_id.items():
+        if len(rows) != 2:
+            raise CSVStorageError(
+                f"El partido {game_id} debe tener exactamente dos equipos."
+            )
+        team_ids = {_numeric_identifier(row["TEAM_ID"], "TEAM_ID") for row in rows}
+        if len(team_ids) != 2:
+            raise CSVStorageError(
+                f"El partido {game_id} debe tener dos TEAM_ID distintos."
+            )
+
+        matchups: list[tuple[str, str]] = []
+        metadata: tuple[str, str, str] | None = None
+        for row in rows:
+            matchup = _serialize_value(row["MATCHUP"]).strip()
+            if " vs. " in matchup:
+                first, second = matchup.split(" vs. ", maxsplit=1)
+            elif " @ " in matchup:
+                first, second = matchup.split(" @ ", maxsplit=1)
+            else:
+                raise CSVStorageError(
+                    f"El partido {game_id} tiene un MATCHUP inválido: {matchup!r}."
+                )
+            own_abbreviation = str(row.get("TEAM_ABBREVIATION", "")).strip()
+            if own_abbreviation and first != own_abbreviation:
+                raise CSVStorageError(
+                    f"El partido {game_id} tiene un MATCHUP que no coincide "
+                    "con sus equipos."
+                )
+            matchups.append((first, second))
+            row_metadata = tuple(
+                _serialize_value(row.get(column, "")).strip()
+                for column in ("SEASON_ID", "GAME_DATE", "VIDEO_AVAILABLE")
+            )
+            if metadata is not None and row_metadata != metadata:
+                raise CSVStorageError(
+                    f"El partido {game_id} tiene metadatos inconsistentes."
+                )
+            metadata = row_metadata
+
+        if matchups[0] != (matchups[1][1], matchups[1][0]):
+            raise CSVStorageError(
+                f"El partido {game_id} tiene datos de MATCHUP inconsistentes."
+            )
+        team_id_1, team_id_2 = sorted(team_ids, key=int)
+        season_id, game_date, video_available = metadata or ("", "", "")
+        games.append(
+            {
+                "GAME_ID": game_id,
+                "SEASON_ID": season_id,
+                "GAME_DATE": game_date,
+                "TEAM_ID_1": team_id_1,
+                "TEAM_ID_2": team_id_2,
+                "VIDEO_AVAILABLE": video_available,
+            }
+        )
+    return games
+
+
 def _validate_rows(
     rows: Sequence[Mapping[str, object]],
     required_columns: tuple[str, ...],
@@ -295,8 +437,19 @@ def _prepare_table(
     key_columns: tuple[str, ...],
     incoming_rows: Sequence[Mapping[str, object]],
     fixed_columns: tuple[str, ...] | None,
+    excluded_columns: frozenset[str] = frozenset(),
 ) -> PreparedTable | None:
     headers, existing_rows = _read_existing(path, key_columns)
+    if excluded_columns:
+        headers = [column for column in headers if column not in excluded_columns]
+        existing_rows = {
+            key: {
+                column: value
+                for column, value in row.items()
+                if column not in excluded_columns
+            }
+            for key, row in existing_rows.items()
+        }
     if fixed_columns is not None:
         headers = list(fixed_columns)
         existing_rows = {
@@ -305,7 +458,16 @@ def _prepare_table(
         }
 
     for row in incoming_rows:
-        _merge_row(existing_rows, headers, row, key_columns)
+        _merge_row(
+            existing_rows,
+            headers,
+            {
+                column: value
+                for column, value in row.items()
+                if column not in excluded_columns
+            },
+            key_columns,
+        )
 
     if not incoming_rows and not path.exists():
         return None

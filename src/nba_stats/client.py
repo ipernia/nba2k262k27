@@ -37,7 +37,15 @@ _REQUIRED_COLUMNS = {
         "TEAM_ABBREVIATION",
         "TEAM_NAME",
     ),
-    "T": ("GAME_ID", "TEAM_ID", "TEAM_ABBREVIATION", "TEAM_NAME"),
+    "T": (
+        "GAME_ID",
+        "SEASON_ID",
+        "GAME_DATE",
+        "MATCHUP",
+        "TEAM_ID",
+        "TEAM_ABBREVIATION",
+        "TEAM_NAME",
+    ),
 }
 _SEASON_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 

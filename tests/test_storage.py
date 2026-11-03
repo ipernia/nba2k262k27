@@ -19,11 +19,26 @@ PLAYER_ROWS = [
 TEAM_ROWS = [
     {
         "GAME_ID": "001",
+        "SEASON_ID": "2026-27",
+        "GAME_DATE": "2026-10-20",
+        "MATCHUP": "TST vs. OPP",
         "TEAM_ID": 1,
         "TEAM_ABBREVIATION": "TST",
         "TEAM_NAME": "Test Team",
         "PTS": 100,
-    }
+        "VIDEO_AVAILABLE": 1,
+    },
+    {
+        "GAME_ID": "001",
+        "SEASON_ID": "2026-27",
+        "GAME_DATE": "2026-10-20",
+        "MATCHUP": "OPP @ TST",
+        "TEAM_ID": 2,
+        "TEAM_ABBREVIATION": "OPP",
+        "TEAM_NAME": "Opponent Team",
+        "PTS": 98,
+        "VIDEO_AVAILABLE": 1,
+    },
 ]
 
 
@@ -32,17 +47,18 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(csv_file))
 
 
-def test_creates_only_four_csvs_with_image_urls_and_game_stats(
+def test_creates_csvs_with_image_urls_games_and_game_stats(
     tmp_path: Path,
 ) -> None:
     data_directory = tmp_path / "data"
 
     counts = save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS)
 
-    assert counts == {"P": 1, "T": 1}
+    assert counts == {"P": 1, "T": 2}
     expected_names = {
         "teams.csv",
         "players.csv",
+        "games.csv",
         "team_game_stats.csv",
         "player_game_stats.csv",
     }
@@ -73,6 +89,25 @@ def test_creates_only_four_csvs_with_image_urls_and_game_stats(
             "PRIMARY_COLOR_RGB": "",
             "SECONDARY_COLOR_RGB": "",
             "COLOR_SOURCE_URL": "",
+        },
+        {
+            "TEAM_ID": "2",
+            "TEAM_ABBREVIATION": "OPP",
+            "TEAM_NAME": "Opponent Team",
+            "TEAM_LOGO_URL": "https://cdn.nba.com/logos/nba/2/primary/L/logo.svg",
+            "PRIMARY_COLOR_RGB": "",
+            "SECONDARY_COLOR_RGB": "",
+            "COLOR_SOURCE_URL": "",
+        },
+    ]
+    assert read_csv(data_directory / "games.csv") == [
+        {
+            "GAME_ID": "001",
+            "SEASON_ID": "2026-27",
+            "GAME_DATE": "2026-10-20",
+            "TEAM_ID_1": "1",
+            "TEAM_ID_2": "2",
+            "VIDEO_AVAILABLE": "1",
         }
     ]
     player_stats = read_csv(data_directory / "player_game_stats.csv")[0]
@@ -82,6 +117,8 @@ def test_creates_only_four_csvs_with_image_urls_and_game_stats(
     assert player_stats["GAME_ID"] == team_stats["GAME_ID"] == "001"
     assert "PLAYER_NAME" not in player_stats
     assert "TEAM_NAME" not in team_stats
+    for stats in (player_stats, team_stats):
+        assert not {"SEASON_ID", "GAME_DATE", "MATCHUP", "VIDEO_AVAILABLE"} & set(stats)
 
 
 def test_accumulates_games_and_updates_catalog_rows(tmp_path: Path) -> None:
@@ -98,36 +135,51 @@ def test_accumulates_games_and_updates_catalog_rows(tmp_path: Path) -> None:
     next_team_game = {
         **TEAM_ROWS[0],
         "GAME_ID": "002",
-        "TEAM_ID": 2,
+        "TEAM_ID": 3,
         "TEAM_ABBREVIATION": "NEW",
         "TEAM_NAME": "New Team",
+        "MATCHUP": "NEW vs. ALT",
         "PTS": 98,
+    }
+    next_opponent_game = {
+        **TEAM_ROWS[1],
+        "GAME_ID": "002",
+        "TEAM_ID": 4,
+        "TEAM_ABBREVIATION": "ALT",
+        "TEAM_NAME": "Alt Team",
+        "MATCHUP": "ALT @ NEW",
+        "PTS": 90,
     }
 
     counts = save_game_logs(
         data_directory,
         [PLAYER_ROWS[0] | {"PTS": 12}, next_player_game],
-        [TEAM_ROWS[0] | {"PTS": 102}, next_team_game],
+        [TEAM_ROWS[0] | {"PTS": 102}, TEAM_ROWS[1], next_team_game, next_opponent_game],
     )
 
     players = read_csv(data_directory / "players.csv")
     teams = read_csv(data_directory / "teams.csv")
     player_stats = read_csv(data_directory / "player_game_stats.csv")
     team_stats = read_csv(data_directory / "team_game_stats.csv")
-    assert counts == {"P": 2, "T": 2}
+    assert counts == {"P": 2, "T": 4}
     assert len(players) == 1
-    assert len(teams) == 2
-    assert len(player_stats) == len(team_stats) == 2
+    assert len(teams) == 4
+    assert len(player_stats) == 2
+    assert len(team_stats) == 4
     assert player_stats[0]["PTS"] == "12"
     assert [row["TEAM_ID"] for row in player_stats] == ["1", "2"]
     assert team_stats[0]["PTS"] == "102"
+    games = read_csv(data_directory / "games.csv")
+    assert [row["GAME_ID"] for row in games] == ["001", "002"]
+    assert games[1]["TEAM_ID_1"] == "3"
+    assert games[1]["TEAM_ID_2"] == "4"
 
 
 def test_existing_catalogs_are_reduced_to_the_core_columns(tmp_path: Path) -> None:
     data_directory = tmp_path / "data"
     data_directory.mkdir()
     (data_directory / "players.csv").write_text(
-        "PLAYER_ID,PLAYER_NAME,COUNTRY\n23,Player One,USA\n",
+        "PLAYER_ID,PLAYER_NAME,COUNTRY\n23,Player One,USA\n24,Legacy Player,USA\n",
         encoding="utf-8",
     )
     (data_directory / "teams.csv").write_text(
@@ -155,6 +207,17 @@ def test_existing_catalogs_are_reduced_to_the_core_columns(tmp_path: Path) -> No
         "SECONDARY_COLOR_RGB": "",
         "COLOR_SOURCE_URL": "",
     }
+    assert read_csv(data_directory / "players.csv")[1] == {
+        "PLAYER_ID": "24",
+        "PLAYER_NAME": "Legacy Player",
+        "PLAYER_FACE_URL": "assets/player_silhouette.png",
+        "HEIGHT": "",
+        "WEIGHT": "",
+        "SCHOOL": "",
+        "INDIVIDUAL_ACHIEVEMENTS": "",
+    }
+    image = Path(__file__).parents[1] / "assets" / "player_silhouette.png"
+    assert image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None:
@@ -243,7 +306,7 @@ def test_empty_results_do_not_create_or_change_files(tmp_path: Path) -> None:
 
     counts = save_game_logs(data_directory, [], [])
 
-    assert counts == {"P": 1, "T": 1}
+    assert counts == {"P": 1, "T": 2}
     assert {
         path.name: path.read_bytes() for path in data_directory.glob("*.csv")
     } == originals
@@ -304,4 +367,63 @@ def test_empty_store_does_not_create_csvs(tmp_path: Path) -> None:
     data_directory = tmp_path / "data"
 
     assert save_game_logs(data_directory, [], []) == {"P": 0, "T": 0}
+    assert not data_directory.exists()
+
+
+def test_migrates_existing_game_metadata_to_games_csv(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    (data_directory / "player_game_stats.csv").write_text(
+        "SEASON_ID,PLAYER_ID,TEAM_ID,GAME_ID,GAME_DATE,MATCHUP,WL,PTS,"
+        "VIDEO_AVAILABLE\n"
+        "2026-27,23,1,001,2026-10-20,TST vs. OPP,W,10,1\n",
+        encoding="utf-8",
+    )
+    (data_directory / "team_game_stats.csv").write_text(
+        "SEASON_ID,TEAM_ID,GAME_ID,GAME_DATE,MATCHUP,WL,PTS,VIDEO_AVAILABLE\n"
+        "2026-27,1,001,2026-10-20,TST vs. OPP,W,100,1\n"
+        "2026-27,2,001,2026-10-20,OPP @ TST,L,98,1\n",
+        encoding="utf-8",
+    )
+
+    counts = save_game_logs(data_directory, [], [])
+
+    assert counts == {"P": 1, "T": 2}
+    assert read_csv(data_directory / "games.csv") == [
+        {
+            "GAME_ID": "001",
+            "SEASON_ID": "2026-27",
+            "GAME_DATE": "2026-10-20",
+            "TEAM_ID_1": "1",
+            "TEAM_ID_2": "2",
+            "VIDEO_AVAILABLE": "1",
+        }
+    ]
+    assert list(read_csv(data_directory / "player_game_stats.csv")[0]) == [
+        "PLAYER_ID",
+        "TEAM_ID",
+        "GAME_ID",
+        "WL",
+        "PTS",
+    ]
+    assert list(read_csv(data_directory / "team_game_stats.csv")[0]) == [
+        "TEAM_ID",
+        "GAME_ID",
+        "WL",
+        "PTS",
+    ]
+
+
+def test_rejects_game_with_inconsistent_matchups_without_writing(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    inconsistent_rows = [
+        TEAM_ROWS[0],
+        TEAM_ROWS[1] | {"MATCHUP": "OPP vs. BAD"},
+    ]
+
+    with pytest.raises(CSVStorageError, match="MATCHUP inconsistentes"):
+        save_game_logs(data_directory, PLAYER_ROWS, inconsistent_rows)
+
     assert not data_directory.exists()
