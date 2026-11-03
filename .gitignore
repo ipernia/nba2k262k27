@@ -31,3 +31,5 @@ logs/
 !.vscode/extensions.json
 .DS_Store
 Thumbs.db
+
+.TODO.md
