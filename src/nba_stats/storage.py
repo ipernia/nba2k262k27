@@ -31,12 +31,46 @@ _TEAM_REQUIRED_COLUMNS = (
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
 )
-_PLAYER_CATALOG_COLUMNS = ("PLAYER_ID", "PLAYER_NAME", "PLAYER_FACE_URL")
+_PLAYER_CATALOG_COLUMNS = (
+    "PLAYER_ID",
+    "PLAYER_NAME",
+    "PLAYER_FACE_URL",
+    "HEIGHT",
+    "WEIGHT",
+    "SCHOOL",
+    "INDIVIDUAL_ACHIEVEMENTS",
+)
 _TEAM_CATALOG_COLUMNS = (
     "TEAM_ID",
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
     "TEAM_LOGO_URL",
+    "PRIMARY_COLOR_RGB",
+    "SECONDARY_COLOR_RGB",
+    "COLOR_SOURCE_URL",
+)
+_PLAYER_SEASON_KEY = ("PLAYER_ID", "TEAM_ID", "SEASON_ID")
+_PLAYER_SEASON_COLUMNS = (
+    "PLAYER_ID",
+    "TEAM_ID",
+    "SEASON_ID",
+    "JERSEY_NUM",
+    "POSITION",
+    "EXP",
+)
+_TEAM_SEASON_KEY = ("TEAM_ID", "SEASON_ID")
+_TEAM_SEASON_COLUMNS = (
+    "TEAM_ID",
+    "SEASON_ID",
+    "CONFERENCE",
+    "DIVISION",
+    "WINS",
+    "LOSSES",
+    "WIN_PCT",
+    "HOME_RECORD",
+    "ROAD_RECORD",
+    "L10",
+    "STREAK",
 )
 
 
@@ -49,11 +83,21 @@ def save_game_logs(
     player_rows: Sequence[Mapping[str, object]],
     team_rows: Sequence[Mapping[str, object]],
 ) -> dict[str, int]:
-    """Acumula catálogos de entidades y estadísticas de partidos en cuatro CSV."""
+    """Acumula catálogos y estadísticas, normalizando temporadas existentes."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
     teams = _validate_rows(team_rows, _TEAM_REQUIRED_COLUMNS, "equipos")
 
+    player_season_entities, team_season_entities, season_tables = (
+        _prepare_existing_seasons(data_directory)
+    )
     player_catalog: RowsByKey = {}
+    for row in player_season_entities:
+        _merge_row(
+            player_catalog,
+            list(_PLAYER_CATALOG_COLUMNS),
+            row,
+            ("PLAYER_ID",),
+        )
     for row in players:
         player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
         _merge_row(
@@ -70,6 +114,13 @@ def save_game_logs(
         )
 
     team_catalog: RowsByKey = {}
+    for row in team_season_entities:
+        _merge_row(
+            team_catalog,
+            list(_TEAM_CATALOG_COLUMNS),
+            row,
+            ("TEAM_ID",),
+        )
     for row in teams:
         team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
         _merge_row(
@@ -134,8 +185,76 @@ def save_game_logs(
                 counts["P"] = len(table[2])
             elif filename == "team_game_stats.csv":
                 counts["T"] = len(table[2])
+    prepared.extend(season_tables)
     _write_tables(prepared)
     return counts
+
+
+def _prepare_existing_seasons(
+    data_directory: Path,
+) -> tuple[list[Row], list[Row], list[PreparedTable]]:
+    player_entities: RowsByKey = {}
+    team_entities: RowsByKey = {}
+    season_tables: list[PreparedTable] = []
+
+    player_season_path = data_directory / "player_seasons.csv"
+    if player_season_path.exists():
+        _, rows = _read_existing(player_season_path, _PLAYER_SEASON_KEY)
+        for row in rows.values():
+            player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
+            player = {
+                column: row.get(column, "")
+                for column in _PLAYER_CATALOG_COLUMNS
+                if column not in {"PLAYER_ID", "PLAYER_FACE_URL"}
+            }
+            player["PLAYER_ID"] = player_id
+            player["PLAYER_FACE_URL"] = (
+                f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+            )
+            _merge_row(
+                player_entities,
+                list(_PLAYER_CATALOG_COLUMNS),
+                player,
+                ("PLAYER_ID",),
+            )
+        table = _prepare_table(
+            player_season_path,
+            _PLAYER_SEASON_KEY,
+            [],
+            _PLAYER_SEASON_COLUMNS,
+        )
+        if table is not None:
+            season_tables.append(table)
+
+    team_season_path = data_directory / "team_seasons.csv"
+    if team_season_path.exists():
+        _, rows = _read_existing(team_season_path, _TEAM_SEASON_KEY)
+        for row in rows.values():
+            team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+            team = {
+                "TEAM_ID": team_id,
+                "TEAM_LOGO_URL": row.get("TEAM_LOGO_URL", "")
+                or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg",
+                "PRIMARY_COLOR_RGB": row.get("PRIMARY_COLOR_RGB", ""),
+                "SECONDARY_COLOR_RGB": row.get("SECONDARY_COLOR_RGB", ""),
+                "COLOR_SOURCE_URL": row.get("COLOR_SOURCE_URL", ""),
+            }
+            _merge_row(
+                team_entities,
+                list(_TEAM_CATALOG_COLUMNS),
+                team,
+                ("TEAM_ID",),
+            )
+        table = _prepare_table(
+            team_season_path,
+            _TEAM_SEASON_KEY,
+            [],
+            _TEAM_SEASON_COLUMNS,
+        )
+        if table is not None:
+            season_tables.append(table)
+
+    return list(player_entities.values()), list(team_entities.values()), season_tables
 
 
 def _validate_rows(
