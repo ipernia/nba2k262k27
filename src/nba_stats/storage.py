@@ -31,7 +31,6 @@ _TEAM_REQUIRED_COLUMNS = (
     "GAME_ID",
     "SEASON_ID",
     "GAME_DATE",
-    "MATCHUP",
     "TEAM_ID",
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
@@ -342,6 +341,12 @@ def save_game_logs(
         team_stats.extend(_map_team_game_row(row) for row in existing_team_stats)
     team_stats.extend(_map_team_game_row(row) for row in teams)
     games_path = data_directory / "games.csv"
+    location_present_game_ids: set[str] = set()
+    neutral_signal_game_ids = {
+        _serialize_value(row.get("GAME_ID", "")).strip()
+        for row in teams
+        if "IS_NEUTRAL_SITE" in row
+    }
     if teams:
         incoming_game_ids = {_row_key(row, ("GAME_ID",))[0] for row in teams}
         game_team_rows = [
@@ -357,7 +362,7 @@ def save_game_logs(
         known_game_types = {
             key[0]: row.get("SEASON_TYPE", "") for key, row in known_by_id.items()
         }
-        updated_games = _build_games(
+        updated_games, confirmed_home_by_game, location_present_game_ids = _build_games(
             teams,
             game_team_rows,
             season,
@@ -365,15 +370,45 @@ def save_game_logs(
             known_game_types,
             updated_at,
         )
+        for stats in team_stats:
+            game_id = _serialize_value(stats.get("GAME_ID", "")).strip()
+            team_id = _serialize_value(stats.get("TEAM_ID", "")).strip()
+            if game_id not in location_present_game_ids:
+                continue
+            home_team_id = confirmed_home_by_game.get(game_id)
+            stats["IS_HOME"] = (
+                ("True" if team_id == home_team_id else "False") if home_team_id else ""
+            )
         for row in updated_games:
-            _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
+            game_id = _serialize_value(row.get("GAME_ID", "")).strip()
+            if game_id not in location_present_game_ids:
+                existing_game = known_by_id.get((game_id,), {})
+                for column in ("HOME_TEAM_ID", "AWAY_TEAM_ID"):
+                    if existing_game.get(column, "").strip():
+                        row[column] = existing_game[column]
+            _merge_row(
+                known_by_id,
+                game_headers,
+                row,
+                ("GAME_ID",),
+                replace_empty_columns=(
+                    frozenset({"IS_NEUTRAL_SITE"})
+                    if game_id in neutral_signal_game_ids
+                    else frozenset()
+                ),
+            )
         games = list(known_by_id.values())
     elif games_path.exists():
         games = _migrate_games(data_directory)
     else:
-        games = _build_games([], existing_team_stats, season, season_type)
+        games, _, location_present_game_ids = _build_games(
+            [], existing_team_stats, season, season_type
+        )
+    teams_with_unknown_location: set[str] = set()
     if season:
-        _update_team_records(team_catalog, team_stats, games, season, updated_at)
+        teams_with_unknown_location = _update_team_records(
+            team_catalog, team_stats, games, season, updated_at
+        )
 
     tables = (
         (
@@ -415,12 +450,33 @@ def save_game_logs(
     prepared: list[PreparedTable] = []
     counts = {"P": 0, "T": 0}
     for filename, key_columns, rows, fixed_columns, excluded_columns in tables:
+        replace_empty_by_key: dict[RowKey, frozenset[str]] = {}
+        if filename == "teams.csv":
+            split_columns = frozenset(
+                {"HOME_WINS", "HOME_LOSSES", "AWAY_WINS", "AWAY_LOSSES"}
+            )
+            replace_empty_by_key = {
+                (team_id,): split_columns for team_id in teams_with_unknown_location
+            }
+        elif filename == "games.csv":
+            replace_empty_by_key = {
+                (game_id,): frozenset({"IS_NEUTRAL_SITE"})
+                for game_id in neutral_signal_game_ids
+            }
+        elif filename == "team_game_stats.csv":
+            replace_empty_by_key = {
+                _row_key(row, key_columns): frozenset({"IS_HOME"})
+                for row in rows
+                if _serialize_value(row.get("GAME_ID", "")).strip()
+                in location_present_game_ids
+            }
         table = _prepare_table(
             data_directory / filename,
             key_columns,
             rows,
             fixed_columns,
             excluded_columns,
+            replace_empty_by_key,
         )
         if table is not None:
             prepared.append(table)
@@ -530,9 +586,14 @@ def _build_games(
     season_type: str = "Regular Season",
     known_game_types: Mapping[str, str] | None = None,
     updated_at: str = "",
-) -> list[Row]:
+) -> tuple[list[Row], dict[str, str], set[str]]:
     rows_by_key: RowsByKey = {}
     headers: list[str] = []
+    source_order_by_game: dict[str, list[str]] = {}
+    for row in team_rows:
+        game_id = _serialize_value(row.get("GAME_ID", "")).strip()
+        team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+        source_order_by_game.setdefault(game_id, []).append(team_id)
     for row in existing_team_rows:
         _merge_row(rows_by_key, headers, row, ("GAME_ID", "TEAM_ID"))
     for row in team_rows:
@@ -544,6 +605,8 @@ def _build_games(
         games_by_id.setdefault(game_id, []).append(row)
 
     games: list[Row] = []
+    confirmed_home_by_game: dict[str, str] = {}
+    location_present_game_ids: set[str] = set()
     for game_id, rows in games_by_id.items():
         if len(rows) != 2:
             raise CSVStorageError(
@@ -555,30 +618,13 @@ def _build_games(
                 f"El partido {game_id} debe tener dos TEAM_ID distintos."
             )
 
-        matchups: list[tuple[str, str, str, str]] = []
         metadata: tuple[str, str] | None = None
         score_by_team: dict[str, str] = {}
         for row in rows:
-            matchup = _serialize_value(row["MATCHUP"]).strip()
-            if " vs. " in matchup:
-                first, second = matchup.split(" vs. ", maxsplit=1)
-                home_away = "HOME"
-            elif " @ " in matchup:
-                first, second = matchup.split(" @ ", maxsplit=1)
-                home_away = "AWAY"
-            else:
-                raise CSVStorageError(
-                    f"El partido {game_id} tiene un MATCHUP inválido: {matchup!r}."
-                )
-            own_abbreviation = str(row.get("TEAM_ABBREVIATION", "")).strip()
-            if own_abbreviation and first != own_abbreviation:
-                raise CSVStorageError(
-                    f"El partido {game_id} tiene un MATCHUP que no coincide "
-                    "con sus equipos."
-                )
             team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
-            matchups.append((first, second, home_away, team_id))
             score_by_team[team_id] = _serialize_value(row.get("PTS", "")).strip()
+            if _has_location_source(row):
+                location_present_game_ids.add(game_id)
             row_metadata = (
                 _serialize_value(row.get("SEASON_ID", "")).strip(),
                 _serialize_value(row.get("GAME_DATE", "")).strip(),
@@ -589,21 +635,14 @@ def _build_games(
                 )
             metadata = row_metadata
 
-        if (matchups[0][0], matchups[0][1]) != (
-            matchups[1][1],
-            matchups[1][0],
-        ):
-            raise CSVStorageError(
-                f"El partido {game_id} tiene datos de MATCHUP inconsistentes."
+        home_team_id, away_team_id, is_neutral_site, official_home_id = (
+            _resolve_game_location(
+                rows,
+                source_order_by_game.get(game_id, []),
             )
-        home_rows = [row for row in matchups if row[2] == "HOME"]
-        away_rows = [row for row in matchups if row[2] == "AWAY"]
-        if len(home_rows) != 1 or len(away_rows) != 1:
-            raise CSVStorageError(
-                f"El partido {game_id} no identifica localía de forma inequívoca."
-            )
-        home_team_id = home_rows[0][3]
-        away_team_id = away_rows[0][3]
+        )
+        if official_home_id and is_neutral_site != "True":
+            confirmed_home_by_game[game_id] = official_home_id
         season_id, game_date = metadata or ("", "")
         season_value = season or _season_from_id(season_id)
         home_score = score_by_team.get(home_team_id, "")
@@ -632,11 +671,77 @@ def _build_games(
                 "HOME_TEAM_SCORE": home_score,
                 "AWAY_TEAM_SCORE": away_score,
                 "WINNER_TEAM_ID": winner_team_id,
-                "IS_NEUTRAL_SITE": "",
+                "IS_NEUTRAL_SITE": is_neutral_site,
                 "LAST_UPDATED": updated_at,
             }
         )
-    return games
+    return games, confirmed_home_by_game, location_present_game_ids
+
+
+def _has_location_source(row: Mapping[str, object]) -> bool:
+    return "MATCHUP" in row or "IS_NEUTRAL_SITE" in row
+
+
+def _resolve_game_location(
+    rows: Sequence[Mapping[str, object]],
+    source_order: Sequence[str],
+) -> tuple[str, str, str, str]:
+    team_ids = [_numeric_identifier(row["TEAM_ID"], "TEAM_ID") for row in rows]
+    neutral_values = {
+        value
+        for row in rows
+        if (value := _optional_boolean(row.get("IS_NEUTRAL_SITE", "")))
+    }
+    is_neutral_site = neutral_values.pop() if len(neutral_values) == 1 else ""
+
+    matchups: list[tuple[str, str, str, str]] = []
+    for row in rows:
+        matchup = _serialize_value(row.get("MATCHUP", "")).strip()
+        if matchup.count(" vs. ") == 1:
+            first, second = matchup.split(" vs. ", maxsplit=1)
+            role = "HOME"
+        elif matchup.count(" @ ") == 1:
+            first, second = matchup.split(" @ ", maxsplit=1)
+            role = "AWAY"
+        else:
+            matchups = []
+            break
+        own_abbreviation = _serialize_value(row.get("TEAM_ABBREVIATION", "")).strip()
+        if own_abbreviation and first != own_abbreviation:
+            matchups = []
+            break
+        matchups.append(
+            (first, second, role, _numeric_identifier(row["TEAM_ID"], "TEAM_ID"))
+        )
+
+    if len(matchups) == 2 and (matchups[0][0], matchups[0][1]) == (
+        matchups[1][1],
+        matchups[1][0],
+    ):
+        home_rows = [matchup for matchup in matchups if matchup[2] == "HOME"]
+        away_rows = [matchup for matchup in matchups if matchup[2] == "AWAY"]
+        if len(home_rows) == 1 and len(away_rows) == 1:
+            home_id = home_rows[0][3]
+            return home_id, away_rows[0][3], is_neutral_site, home_id
+
+    if is_neutral_site == "True":
+        ordered_ids = [team_id for team_id in source_order if team_id in team_ids]
+        ordered_ids.extend(
+            team_id for team_id in team_ids if team_id not in ordered_ids
+        )
+        home_id, away_id = ordered_ids
+    else:
+        home_id, away_id = sorted(team_ids, key=int)
+    return home_id, away_id, is_neutral_site, ""
+
+
+def _optional_boolean(value: object) -> str:
+    text = _serialize_value(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return "True"
+    if text in {"false", "0", "no"}:
+        return "False"
+    return ""
 
 
 def _validate_rows(
@@ -695,7 +800,7 @@ def _update_team_records(
     games: Sequence[Mapping[str, object]],
     season: str,
     updated_at: str,
-) -> None:
+) -> set[str]:
     games_by_id = {
         _serialize_value(game.get("GAME_ID", "")).strip(): game for game in games
     }
@@ -731,6 +836,8 @@ def _update_team_records(
         result = "WINS" if is_win else "LOSSES"
         record[result] += 1
         record["GAMES_PLAYED"] += 1
+        if _optional_boolean(game.get("IS_NEUTRAL_SITE", "")) == "True":
+            continue
         location = _serialize_value(stats.get("IS_HOME", "")).strip()
         if location == "True":
             record["HOME_GAMES"] += 1
@@ -739,6 +846,13 @@ def _update_team_records(
             record["AWAY_GAMES"] += 1
             record["AWAY_WINS" if is_win else "AWAY_LOSSES"] += 1
 
+    teams_with_unknown_location: set[str] = set()
+    split_columns = (
+        "HOME_WINS",
+        "HOME_LOSSES",
+        "AWAY_WINS",
+        "AWAY_LOSSES",
+    )
     for team_id, record in records.items():
         key = (team_id,)
         if key not in teams or record["GAMES_PLAYED"] == 0:
@@ -751,14 +865,21 @@ def _update_team_records(
             "LAST_UPDATED": updated_at,
         }
         if record["HOME_GAMES"] + record["AWAY_GAMES"] == games_played:
-            for name in (
-                "HOME_WINS",
-                "HOME_LOSSES",
-                "AWAY_WINS",
-                "AWAY_LOSSES",
-            ):
+            for name in split_columns:
                 record_row[name] = str(record[name])
-        _merge_row(teams, list(_TEAM_CATALOG_COLUMNS), record_row, ("TEAM_ID",))
+            replace_empty_columns = frozenset()
+        else:
+            teams_with_unknown_location.add(team_id)
+            record_row.update({name: "" for name in split_columns})
+            replace_empty_columns = frozenset(split_columns)
+        _merge_row(
+            teams,
+            list(_TEAM_CATALOG_COLUMNS),
+            record_row,
+            ("TEAM_ID",),
+            replace_empty_columns=replace_empty_columns,
+        )
+    return teams_with_unknown_location
 
 
 def _map_existing_player(row: Mapping[str, object], headshot: str) -> CSVRow:
@@ -993,6 +1114,7 @@ def _prepare_table(
     incoming_rows: Sequence[Mapping[str, object]],
     fixed_columns: tuple[str, ...] | None,
     excluded_columns: frozenset[str] = frozenset(),
+    replace_empty_by_key: Mapping[RowKey, frozenset[str]] | None = None,
 ) -> PreparedTable | None:
     headers, existing_rows = _read_existing(path, key_columns)
     if excluded_columns:
@@ -1013,6 +1135,7 @@ def _prepare_table(
         }
 
     for row in incoming_rows:
+        key = _row_key(row, key_columns)
         _merge_row(
             existing_rows,
             headers,
@@ -1022,6 +1145,7 @@ def _prepare_table(
                 if column not in excluded_columns
             },
             key_columns,
+            replace_empty_columns=(replace_empty_by_key or {}).get(key, frozenset()),
         )
 
     if not incoming_rows and not path.exists():
@@ -1036,6 +1160,7 @@ def _merge_row(
     headers: list[str],
     row: Mapping[str, object],
     key_columns: tuple[str, ...],
+    replace_empty_columns: frozenset[str] = frozenset(),
 ) -> None:
     key = _row_key(row, key_columns)
     for column in row:
@@ -1044,7 +1169,7 @@ def _merge_row(
     merged = dict(rows_by_key.get(key, {}))
     for column in headers:
         value = _serialize_value(row.get(column, ""))
-        if value.strip():
+        if value.strip() or column in replace_empty_columns:
             merged[column] = value
         else:
             merged.setdefault(column, "")

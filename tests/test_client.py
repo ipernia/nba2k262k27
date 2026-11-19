@@ -227,21 +227,21 @@ def test_rejects_response_missing_identifier() -> None:
         )
 
 
-def test_rejects_team_response_missing_matchup() -> None:
+def test_accepts_team_response_missing_matchup() -> None:
     rows = [
         {key: value for key, value in row.items() if key != "MATCHUP"}
         for row in _game_rows("T")
     ]
 
-    with pytest.raises(NBAStatsError, match="MATCHUP"):
-        fetch_league_game_logs(
-            "2026-27",
-            endpoint_factory=lambda **kwargs: FakeEndpoint(
-                rows
-                if kwargs["player_or_team_abbreviation"] == "T"
-                else _game_rows("P")
-            ),
-        )
+    result = fetch_league_game_logs(
+        "2026-27",
+        endpoint_factory=lambda **kwargs: FakeEndpoint(
+            rows if kwargs["player_or_team_abbreviation"] == "T" else _game_rows("P")
+        ),
+    )
+
+    assert len(result["T"]) == 2
+    assert "MATCHUP" not in result["T"][0]
 
 
 def test_rejects_response_without_data_frames() -> None:

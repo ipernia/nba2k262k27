@@ -43,7 +43,6 @@ _REQUIRED_COLUMNS = {
         "GAME_ID",
         "SEASON_ID",
         "GAME_DATE",
-        "MATCHUP",
         "TEAM_ID",
         "TEAM_ABBREVIATION",
         "TEAM_NAME",

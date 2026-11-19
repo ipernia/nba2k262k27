@@ -427,16 +427,113 @@ def test_migrates_existing_game_metadata_to_games_csv(tmp_path: Path) -> None:
     assert team_stats[0]["TEAM_POINTS"] == "100"
 
 
-def test_rejects_game_with_inconsistent_matchups_without_writing(
-    tmp_path: Path,
-) -> None:
+def test_preserves_game_stats_when_matchup_is_inconsistent(tmp_path: Path) -> None:
     data_directory = tmp_path / "data"
     inconsistent_rows = [
         TEAM_ROWS[0],
         TEAM_ROWS[1] | {"MATCHUP": "OPP vs. BAD"},
     ]
 
-    with pytest.raises(CSVStorageError, match="MATCHUP inconsistentes"):
-        save_game_logs(data_directory, PLAYER_ROWS, inconsistent_rows)
+    counts = save_game_logs(data_directory, PLAYER_ROWS, inconsistent_rows)
 
-    assert not data_directory.exists()
+    games = read_csv(data_directory / "games.csv")
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    assert counts == {"P": 1, "T": 2}
+    assert games[0]["HOME_TEAM_ID"] == "1"
+    assert games[0]["AWAY_TEAM_ID"] == "2"
+    assert games[0]["IS_NEUTRAL_SITE"] == ""
+    assert [row["IS_HOME"] for row in team_stats] == ["", ""]
+    assert [row["TEAM_POINTS"] for row in team_stats] == ["100", "98"]
+
+
+def test_keeps_official_home_team_for_neutral_game(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    neutral_rows = [
+        TEAM_ROWS[0] | {"IS_NEUTRAL_SITE": True},
+        TEAM_ROWS[1] | {"IS_NEUTRAL_SITE": True},
+    ]
+
+    save_game_logs(data_directory, PLAYER_ROWS, neutral_rows, season="2026-27")
+
+    game = read_csv(data_directory / "games.csv")[0]
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    teams = read_csv(data_directory / "teams.csv")
+    assert game["HOME_TEAM_ID"] == "1"
+    assert game["AWAY_TEAM_ID"] == "2"
+    assert game["IS_NEUTRAL_SITE"] == "True"
+    assert [row["IS_HOME"] for row in team_stats] == ["", ""]
+    assert all(
+        not row["HOME_WINS"]
+        and not row["HOME_LOSSES"]
+        and not row["AWAY_WINS"]
+        and not row["AWAY_LOSSES"]
+        for row in teams
+    )
+
+
+def test_uses_source_order_for_neutral_game_without_official_home(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    neutral_rows = [
+        TEAM_ROWS[1]
+        | {
+            "TEAM_ID": 2,
+            "TEAM_ABBREVIATION": "OPP",
+            "MATCHUP": "OPP vs. TST",
+            "IS_NEUTRAL_SITE": True,
+        },
+        TEAM_ROWS[0]
+        | {
+            "TEAM_ID": 1,
+            "TEAM_ABBREVIATION": "TST",
+            "MATCHUP": "TST vs. OPP",
+            "IS_NEUTRAL_SITE": True,
+        },
+    ]
+
+    save_game_logs(data_directory, PLAYER_ROWS, neutral_rows)
+
+    game = read_csv(data_directory / "games.csv")[0]
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    assert game["HOME_TEAM_ID"] == "2"
+    assert game["AWAY_TEAM_ID"] == "1"
+    assert game["IS_NEUTRAL_SITE"] == "True"
+    assert all(row["IS_HOME"] == "" for row in team_stats)
+
+
+def test_uses_deterministic_order_when_locality_and_neutrality_are_unknown(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    unknown_rows = [
+        {key: value for key, value in TEAM_ROWS[1].items() if key != "MATCHUP"},
+        {key: value for key, value in TEAM_ROWS[0].items() if key != "MATCHUP"},
+    ]
+
+    counts = save_game_logs(data_directory, PLAYER_ROWS, unknown_rows)
+
+    game = read_csv(data_directory / "games.csv")[0]
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    assert counts == {"P": 1, "T": 2}
+    assert game["HOME_TEAM_ID"] == "1"
+    assert game["AWAY_TEAM_ID"] == "2"
+    assert game["IS_NEUTRAL_SITE"] == ""
+    assert all(row["IS_HOME"] == "" for row in team_stats)
+
+
+def test_processes_game_0022600189_with_ambiguous_matchup(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    ambiguous_rows = [
+        TEAM_ROWS[0] | {"GAME_ID": "0022600189"},
+        TEAM_ROWS[1] | {"GAME_ID": "0022600189", "MATCHUP": "OPP vs. TST"},
+    ]
+
+    counts = save_game_logs(data_directory, PLAYER_ROWS, ambiguous_rows)
+
+    game = read_csv(data_directory / "games.csv")[0]
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    assert counts == {"P": 1, "T": 2}
+    assert game["GAME_ID"] == "0022600189"
+    assert game["IS_NEUTRAL_SITE"] == ""
+    assert len(team_stats) == 2

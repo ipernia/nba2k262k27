@@ -66,24 +66,26 @@ Una fila por partido; clave primaria `GAME_ID`.
 | GAME_TIME | hora local | Hora programada/local | No disponible en LeagueGameLog | Sí |
 | GAME_TIME_UTC | fecha-hora UTC | Instante UTC | No disponible en LeagueGameLog | Sí |
 | GAME_STATUS | texto | `Finalizado` si hay marcador ganador verificable; vacío si no | Derivado de PTS | Sí |
-| HOME_TEAM_ID | entero | ID del local | `MATCHUP` (`vs.`); no inferido en migración antigua | Sí |
-| AWAY_TEAM_ID | entero | ID del visitante | `MATCHUP` (`@`); no inferido en migración antigua | Sí |
+| HOME_TEAM_ID | entero | ID del local oficial; si no se conoce, posición técnica determinista | `MATCHUP` recíproco (`vs.`/`@`) o fallback; no inferido en migración antigua | Sí |
+| AWAY_TEAM_ID | entero | ID del visitante oficial; si no se conoce, posición técnica determinista | `MATCHUP` recíproco (`vs.`/`@`) o fallback; no inferido en migración antigua | Sí |
 | HOME_TEAM_SCORE | entero | Puntos del local | NBA Stats | Sí |
 | AWAY_TEAM_SCORE | entero | Puntos del visitante | NBA Stats | Sí |
 | WINNER_TEAM_ID | entero | Equipo con más puntos | Derivado del marcador | Sí |
 | GAME_DURATION | entero | Duración; unidad no disponible | No disponible | Sí |
 | OVERTIME_PERIODS | entero | Número de prórrogas | No disponible en LeagueGameLog | Sí |
-| IS_NEUTRAL_SITE | booleano | Cancha neutral | No disponible; no se asume `False` | Sí |
+| IS_NEUTRAL_SITE | booleano | Cancha neutral | Solo señal explícita; vacío si se desconoce, no se infiere de `MATCHUP` | Sí |
 | ARENA_NAME | texto | Pabellón | No disponible | Sí |
 | ATTENDANCE | entero | Asistencia; personas | No disponible | Sí |
 | PLAYOFF_ROUND | texto | Ronda de playoffs | No disponible | Sí |
 | YOUTUBE_HIGHLIGHTS_URL | URL | Vídeo verificado | No se recopila; no se inventa | Sí |
 | LAST_UPDATED | fecha-hora ISO 8601 | Momento UTC de la última escritura ETL | Reloj local UTC; no es fecha de la fuente | Sí |
 
-Los partidos migrados desde el formato `TEAM_ID_1/TEAM_ID_2` conservan fecha,
-temporada y marcador/ganador recuperables, pero la localía queda vacía porque
-el orden numérico antiguo no la codificaba. Los IDs no se reinterpretan como
-local/visitante.
+Si `MATCHUP` no identifica localía oficial, los IDs se conservan en un orden
+determinista (orden de fuente para neutral confirmado; orden numérico cuando
+se desconoce la neutralidad). Esa asignación no es evidencia de localía. Los
+partidos migrados desde el formato `TEAM_ID_1/TEAM_ID_2` conservan fecha,
+temporada y marcador/ganador recuperables, pero no se interpreta el orden
+antiguo como local/visitante.
 
 ## PLAYERS (`players.csv`)
 
@@ -133,7 +135,7 @@ Una fila por equipo y partido; clave compuesta `GAME_ID + TEAM_ID`.
 |---|---|---|---|---|
 | GAME_ID | texto/entero | Partido | NBA Stats; FK a GAMES | No |
 | TEAM_ID | entero | Equipo | NBA Stats; FK a TEAMS | No |
-| IS_HOME | booleano | Local (`True`) o visitante (`False`) | Derivado de `MATCHUP` | Sí |
+| IS_HOME | booleano | Local oficial (`True`) o visitante (`False`) | Solo `MATCHUP` recíproco y no neutral; vacío si no se confirma | Sí |
 | TEAM_POINTS | entero | Puntos anotados | NBA Stats `PTS` | Sí |
 | FIELD_GOALS_MADE | entero | Tiros de campo anotados | NBA Stats `FGM` | Sí |
 | FIELD_GOALS_ATTEMPTED | entero | Tiros de campo intentados | NBA Stats `FGA` | Sí |
@@ -160,7 +162,9 @@ Una fila por equipo y partido; clave compuesta `GAME_ID + TEAM_ID`.
 | BIGGEST_LEAD | entero | Máxima ventaja | No disponible | Sí |
 | TEAM_TURNOVERS | entero | Pérdidas de equipo | No disponible | Sí |
 
-Los porcentajes se guardan como los entrega NBA Stats (fracción de 0 a 1).
+Los partidos neutrales y aquellos sin localía confirmada no se cuentan en
+análisis de rendimiento en casa/fuera. Los porcentajes se guardan como los
+entrega NBA Stats (fracción de 0 a 1).
 Las estadísticas avanzadas no se calculan si la fuente no las entrega.
 
 ## PLAYER_GAME_STATS (`player_game_stats.csv`)
