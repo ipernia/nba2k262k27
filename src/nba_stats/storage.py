@@ -351,7 +351,7 @@ def save_game_logs(
         ]
         known_games = _migrate_games(data_directory) if games_path.exists() else []
         known_by_id: RowsByKey = {}
-        game_headers = list(_GAME_CATALOG_COLUMNS)
+        game_headers: list[str] = list(_GAME_CATALOG_COLUMNS)
         for row in known_games:
             _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
         known_game_types = {
@@ -761,7 +761,7 @@ def _update_team_records(
         _merge_row(teams, list(_TEAM_CATALOG_COLUMNS), record_row, ("TEAM_ID",))
 
 
-def _map_existing_player(row: Mapping[str, object], headshot: str) -> Row:
+def _map_existing_player(row: Mapping[str, object], headshot: str) -> CSVRow:
     mapped = {
         "PLAYER_ID": _serialize_value(row.get("PLAYER_ID", "")).strip(),
         "PLAYER_NAME": _serialize_value(row.get("PLAYER_NAME", "")).strip(),
@@ -788,7 +788,7 @@ def _map_existing_player(row: Mapping[str, object], headshot: str) -> Row:
     return mapped
 
 
-def _map_existing_team(row: Mapping[str, object]) -> Row:
+def _map_existing_team(row: Mapping[str, object]) -> CSVRow:
     team_id = _serialize_value(row.get("TEAM_ID", "")).strip()
     mapped = {
         "TEAM_ID": team_id,
@@ -888,7 +888,7 @@ def _map_team_game_row(row: Mapping[str, object]) -> Row:
     }
 
 
-def _migrate_games(data_directory: Path) -> list[Row]:
+def _migrate_games(data_directory: Path) -> list[CSVRow]:
     game_headers, game_rows = _read_existing(
         data_directory / "games.csv",
         ("GAME_ID",),
@@ -907,7 +907,7 @@ def _migrate_games(data_directory: Path) -> list[Row]:
                 row.get("PTS", "")
             ).strip()
 
-    migrated: list[Row] = []
+    migrated: list[CSVRow] = []
     for key, row in game_rows.items():
         game_id = key[0] if isinstance(key, tuple) else str(key)
         season_id = _serialize_value(row.get("SEASON_ID", "")).strip()
