@@ -5,8 +5,10 @@ from __future__ import annotations
 import csv
 import math
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from numbers import Integral, Real
 from pathlib import Path
 from typing import TypeAlias
@@ -34,33 +36,146 @@ _TEAM_REQUIRED_COLUMNS = (
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
 )
-_GAME_COLUMNS = frozenset({"SEASON_ID", "GAME_DATE", "MATCHUP", "VIDEO_AVAILABLE"})
 _GAME_CATALOG_COLUMNS = (
     "GAME_ID",
-    "SEASON_ID",
+    "SEASON",
+    "SEASON_TYPE",
     "GAME_DATE",
-    "TEAM_ID_1",
-    "TEAM_ID_2",
-    "VIDEO_AVAILABLE",
+    "GAME_TIME",
+    "GAME_TIME_UTC",
+    "GAME_STATUS",
+    "HOME_TEAM_ID",
+    "AWAY_TEAM_ID",
+    "HOME_TEAM_SCORE",
+    "AWAY_TEAM_SCORE",
+    "WINNER_TEAM_ID",
+    "GAME_DURATION",
+    "OVERTIME_PERIODS",
+    "IS_NEUTRAL_SITE",
+    "ARENA_NAME",
+    "ATTENDANCE",
+    "PLAYOFF_ROUND",
+    "YOUTUBE_HIGHLIGHTS_URL",
+    "LAST_UPDATED",
 )
 _DEFAULT_PLAYER_FACE_URL = "assets/player_silhouette.png"
 _PLAYER_CATALOG_COLUMNS = (
     "PLAYER_ID",
     "PLAYER_NAME",
-    "PLAYER_FACE_URL",
-    "HEIGHT",
-    "WEIGHT",
-    "SCHOOL",
-    "INDIVIDUAL_ACHIEVEMENTS",
+    "FIRST_NAME",
+    "LAST_NAME",
+    "NATIONALITY",
+    "COUNTRY_CODE",
+    "FLAG_URL",
+    "BIRTH_DATE",
+    "HEIGHT_METERS",
+    "WEIGHT_KG",
+    "POSITION",
+    "JERSEY_NUMBER",
+    "PLAYER_HEADSHOT_URL",
+    "COLLEGE",
+    "COUNTRY_OF_ORIGIN",
+    "DRAFT_YEAR",
+    "DRAFT_ROUND",
+    "DRAFT_NUMBER",
+    "DRAFT_TEAM_ID",
+    "NBA_EXPERIENCE",
+    "NBA_CHAMPIONSHIPS",
+    "NBA_MVP_AWARDS",
+    "NBA_FINALS_MVP_AWARDS",
+    "ALL_STAR_SELECTIONS",
+    "IS_ACTIVE",
+    "CURRENT_TEAM_ID",
+    "LAST_UPDATED",
 )
 _TEAM_CATALOG_COLUMNS = (
     "TEAM_ID",
-    "TEAM_ABBREVIATION",
     "TEAM_NAME",
+    "TEAM_ABBREVIATION",
+    "TEAM_CITY",
+    "TEAM_NICKNAME",
     "TEAM_LOGO_URL",
-    "PRIMARY_COLOR_RGB",
-    "SECONDARY_COLOR_RGB",
-    "COLOR_SOURCE_URL",
+    "TEAM_PRIMARY_COLOR",
+    "TEAM_SECONDARY_COLOR",
+    "CONFERENCE",
+    "DIVISION",
+    "WINS",
+    "LOSSES",
+    "GAMES_PLAYED",
+    "WIN_PCT",
+    "CONFERENCE_RANK",
+    "DIVISION_RANK",
+    "GAMES_BACK",
+    "HOME_WINS",
+    "HOME_LOSSES",
+    "AWAY_WINS",
+    "AWAY_LOSSES",
+    "NBA_CHAMPIONSHIPS",
+    "ARENA_NAME",
+    "ARENA_CAPACITY",
+    "LAST_UPDATED",
+)
+_TEAM_GAME_STATS_COLUMNS = (
+    "GAME_ID",
+    "TEAM_ID",
+    "IS_HOME",
+    "TEAM_POINTS",
+    "FIELD_GOALS_MADE",
+    "FIELD_GOALS_ATTEMPTED",
+    "FIELD_GOAL_PCT",
+    "THREE_POINTS_MADE",
+    "THREE_POINTS_ATTEMPTED",
+    "THREE_POINT_PCT",
+    "FREE_THROWS_MADE",
+    "FREE_THROWS_ATTEMPTED",
+    "FREE_THROW_PCT",
+    "OFFENSIVE_REBOUNDS",
+    "DEFENSIVE_REBOUNDS",
+    "TOTAL_REBOUNDS",
+    "ASSISTS",
+    "STEALS",
+    "BLOCKS",
+    "TURNOVERS",
+    "PERSONAL_FOULS",
+    "PLUS_MINUS",
+    "POINTS_IN_PAINT",
+    "SECOND_CHANCE_POINTS",
+    "FAST_BREAK_POINTS",
+    "BENCH_POINTS",
+    "BIGGEST_LEAD",
+    "TEAM_TURNOVERS",
+)
+_PLAYER_GAME_STATS_COLUMNS = (
+    "GAME_ID",
+    "PLAYER_ID",
+    "TEAM_ID",
+    "IS_STARTER",
+    "MINUTES",
+    "POINTS",
+    "FIELD_GOALS_MADE",
+    "FIELD_GOALS_ATTEMPTED",
+    "FIELD_GOAL_PCT",
+    "THREE_POINTS_MADE",
+    "THREE_POINTS_ATTEMPTED",
+    "THREE_POINT_PCT",
+    "FREE_THROWS_MADE",
+    "FREE_THROWS_ATTEMPTED",
+    "FREE_THROW_PCT",
+    "OFFENSIVE_REBOUNDS",
+    "DEFENSIVE_REBOUNDS",
+    "TOTAL_REBOUNDS",
+    "ASSISTS",
+    "STEALS",
+    "BLOCKS",
+    "TURNOVERS",
+    "PERSONAL_FOULS",
+    "PLUS_MINUS",
+    "DOUBLE_DOUBLES",
+    "TRIPLE_DOUBLES",
+    "FOULS_DRAWN",
+    "POINTS_OFF_TURNOVERS",
+    "POINTS_IN_PAINT",
+    "SECOND_CHANCE_POINTS",
 )
 _PLAYER_SEASON_KEY = ("PLAYER_ID", "TEAM_ID", "SEASON_ID")
 _PLAYER_SEASON_COLUMNS = (
@@ -95,10 +210,13 @@ def save_game_logs(
     data_directory: Path,
     player_rows: Sequence[Mapping[str, object]],
     team_rows: Sequence[Mapping[str, object]],
+    season: str | None = None,
+    season_type: str = "Regular Season",
 ) -> dict[str, int]:
     """Acumula catálogos y estadísticas, normalizando temporadas existentes."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
     teams = _validate_rows(team_rows, _TEAM_REQUIRED_COLUMNS, "equipos")
+    updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     player_season_entities, team_season_entities, season_tables = (
         _prepare_existing_seasons(data_directory)
@@ -108,12 +226,15 @@ def save_game_logs(
     if existing_player_path.exists():
         _, existing_players = _read_existing(existing_player_path, ("PLAYER_ID",))
         for row in existing_players.values():
-            if not row.get("PLAYER_FACE_URL", "").strip():
-                row["PLAYER_FACE_URL"] = _DEFAULT_PLAYER_FACE_URL
+            headshot = (
+                row.get("PLAYER_HEADSHOT_URL", "").strip()
+                or row.get("PLAYER_FACE_URL", "").strip()
+                or _DEFAULT_PLAYER_FACE_URL
+            )
             _merge_row(
                 player_catalog,
                 list(_PLAYER_CATALOG_COLUMNS),
-                {column: row.get(column, "") for column in _PLAYER_CATALOG_COLUMNS},
+                _map_existing_player(row, headshot),
                 ("PLAYER_ID",),
             )
     for row in player_season_entities:
@@ -123,6 +244,21 @@ def save_game_logs(
             row,
             ("PLAYER_ID",),
         )
+    archived_players_path = data_directory / "old" / "players.csv"
+    if archived_players_path.exists():
+        _, archived_players = _read_existing(archived_players_path, ("PLAYER_ID",))
+        for row in archived_players.values():
+            player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
+            _merge_row(
+                player_catalog,
+                list(_PLAYER_CATALOG_COLUMNS),
+                _map_existing_player(
+                    row,
+                    row.get("PLAYER_FACE_URL", "").strip()
+                    or f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+                ),
+                ("PLAYER_ID",),
+            )
     for row in players:
         player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
         _merge_row(
@@ -131,14 +267,25 @@ def save_game_logs(
             {
                 "PLAYER_ID": player_id,
                 "PLAYER_NAME": row["PLAYER_NAME"],
-                "PLAYER_FACE_URL": (
+                "PLAYER_HEADSHOT_URL": (
                     f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
                 ),
+                "LAST_UPDATED": updated_at,
             },
             ("PLAYER_ID",),
         )
 
     team_catalog: RowsByKey = {}
+    existing_team_path = data_directory / "teams.csv"
+    if existing_team_path.exists():
+        _, existing_teams = _read_existing(existing_team_path, ("TEAM_ID",))
+        for row in existing_teams.values():
+            _merge_row(
+                team_catalog,
+                list(_TEAM_CATALOG_COLUMNS),
+                _map_existing_team(row),
+                ("TEAM_ID",),
+            )
     for row in team_season_entities:
         _merge_row(
             team_catalog,
@@ -146,6 +293,16 @@ def save_game_logs(
             row,
             ("TEAM_ID",),
         )
+    archived_teams_path = data_directory / "old" / "teams.csv"
+    if archived_teams_path.exists():
+        _, archived_teams = _read_existing(archived_teams_path, ("TEAM_ID",))
+        for row in archived_teams.values():
+            _merge_row(
+                team_catalog,
+                list(_TEAM_CATALOG_COLUMNS),
+                _map_existing_team(row),
+                ("TEAM_ID",),
+            )
     for row in teams:
         team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
         _merge_row(
@@ -158,26 +315,23 @@ def save_game_logs(
                 "TEAM_LOGO_URL": (
                     f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
                 ),
+                "LAST_UPDATED": updated_at,
             },
             ("TEAM_ID",),
         )
 
-    player_stats = [
-        {
-            column: value
-            for column, value in row.items()
-            if column not in {"PLAYER_NAME", "TEAM_ABBREVIATION", "TEAM_NAME"}
-        }
-        for row in players
-    ]
-    team_stats = [
-        {
-            column: value
-            for column, value in row.items()
-            if column not in {"TEAM_ABBREVIATION", "TEAM_NAME"}
-        }
-        for row in teams
-    ]
+    player_stats: list[Row] = []
+    existing_player_stats_path = data_directory / "player_game_stats.csv"
+    if existing_player_stats_path.exists():
+        _, existing_player_stats_by_key = _read_existing(
+            existing_player_stats_path, ("GAME_ID", "PLAYER_ID")
+        )
+        player_stats.extend(
+            _map_player_game_row(row) for row in existing_player_stats_by_key.values()
+        )
+    player_stats.extend(_map_player_game_row(row) for row in players)
+
+    team_stats: list[Row] = []
     existing_team_stats: list[CSVRow] = []
     team_stats_path = data_directory / "team_game_stats.csv"
     if team_stats_path.exists():
@@ -185,18 +339,41 @@ def save_game_logs(
             team_stats_path, ("GAME_ID", "TEAM_ID")
         )
         existing_team_stats = list(existing_team_stats_by_key.values())
+        team_stats.extend(_map_team_game_row(row) for row in existing_team_stats)
+    team_stats.extend(_map_team_game_row(row) for row in teams)
+    games_path = data_directory / "games.csv"
     if teams:
         incoming_game_ids = {_row_key(row, ("GAME_ID",))[0] for row in teams}
-        existing_team_stats = [
+        game_team_rows = [
             row
             for row in existing_team_stats
             if _row_key(row, ("GAME_ID",))[0] in incoming_game_ids
         ]
-        games = _build_games(teams, existing_team_stats)
-    elif not (data_directory / "games.csv").exists():
-        games = _build_games([], existing_team_stats)
+        known_games = _migrate_games(data_directory) if games_path.exists() else []
+        known_by_id: RowsByKey = {}
+        game_headers: list[str] = list(_GAME_CATALOG_COLUMNS)
+        for row in known_games:
+            _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
+        known_game_types = {
+            key[0]: row.get("SEASON_TYPE", "") for key, row in known_by_id.items()
+        }
+        updated_games = _build_games(
+            teams,
+            game_team_rows,
+            season,
+            season_type,
+            known_game_types,
+            updated_at,
+        )
+        for row in updated_games:
+            _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
+        games = list(known_by_id.values())
+    elif games_path.exists():
+        games = _migrate_games(data_directory)
     else:
-        games = []
+        games = _build_games([], existing_team_stats, season, season_type)
+    if season:
+        _update_team_records(team_catalog, team_stats, games, season, updated_at)
 
     tables = (
         (
@@ -224,15 +401,15 @@ def save_game_logs(
             "player_game_stats.csv",
             ("GAME_ID", "PLAYER_ID"),
             player_stats,
-            None,
-            _GAME_COLUMNS,
+            _PLAYER_GAME_STATS_COLUMNS,
+            frozenset(),
         ),
         (
             "team_game_stats.csv",
             ("GAME_ID", "TEAM_ID"),
             team_stats,
-            None,
-            _GAME_COLUMNS,
+            _TEAM_GAME_STATS_COLUMNS,
+            frozenset(),
         ),
     )
     prepared: list[PreparedTable] = []
@@ -258,7 +435,7 @@ def save_game_logs(
 
 def _prepare_existing_seasons(
     data_directory: Path,
-) -> tuple[list[Row], list[Row], list[PreparedTable]]:
+) -> tuple[list[CSVRow], list[CSVRow], list[PreparedTable]]:
     player_entities: RowsByKey = {}
     team_entities: RowsByKey = {}
     season_tables: list[PreparedTable] = []
@@ -268,15 +445,25 @@ def _prepare_existing_seasons(
         _, rows = _read_existing(player_season_path, _PLAYER_SEASON_KEY)
         for row in rows.values():
             player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
-            player = {
-                column: row.get(column, "")
-                for column in _PLAYER_CATALOG_COLUMNS
-                if column not in {"PLAYER_ID", "PLAYER_FACE_URL"}
-            }
-            player["PLAYER_ID"] = player_id
-            player["PLAYER_FACE_URL"] = (
-                f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+            player = _map_existing_player(
+                row,
+                row.get("PLAYER_HEADSHOT_URL", "").strip()
+                or row.get("PLAYER_FACE_URL", "").strip()
+                or f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
             )
+            player["PLAYER_ID"] = player_id
+            height_meters = _height_to_meters(row.get("HEIGHT", ""))
+            weight_kg = _pounds_to_kilograms(row.get("WEIGHT", ""))
+            if height_meters:
+                player["HEIGHT_METERS"] = height_meters
+            if weight_kg:
+                player["WEIGHT_KG"] = weight_kg
+            if row.get("SCHOOL", "").strip():
+                player["COLLEGE"] = row["SCHOOL"].strip()
+            if row.get("POSITION", "").strip():
+                player["POSITION"] = row["POSITION"]
+            if row.get("JERSEY_NUM", "").strip():
+                player["JERSEY_NUMBER"] = row["JERSEY_NUM"]
             _merge_row(
                 player_entities,
                 list(_PLAYER_CATALOG_COLUMNS),
@@ -297,13 +484,26 @@ def _prepare_existing_seasons(
         _, rows = _read_existing(team_season_path, _TEAM_SEASON_KEY)
         for row in rows.values():
             team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+            wins = row.get("WINS", "").strip()
+            losses = row.get("LOSSES", "").strip()
+            games_played = ""
+            if wins and losses:
+                try:
+                    games_played = str(int(wins) + int(losses))
+                except ValueError:
+                    games_played = ""
             team = {
                 "TEAM_ID": team_id,
                 "TEAM_LOGO_URL": row.get("TEAM_LOGO_URL", "")
                 or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg",
-                "PRIMARY_COLOR_RGB": row.get("PRIMARY_COLOR_RGB", ""),
-                "SECONDARY_COLOR_RGB": row.get("SECONDARY_COLOR_RGB", ""),
-                "COLOR_SOURCE_URL": row.get("COLOR_SOURCE_URL", ""),
+                "TEAM_PRIMARY_COLOR": _rgb_to_hex(row.get("PRIMARY_COLOR_RGB", "")),
+                "TEAM_SECONDARY_COLOR": _rgb_to_hex(row.get("SECONDARY_COLOR_RGB", "")),
+                "CONFERENCE": row.get("CONFERENCE", ""),
+                "DIVISION": row.get("DIVISION", ""),
+                "WINS": wins,
+                "LOSSES": losses,
+                "GAMES_PLAYED": games_played,
+                "WIN_PCT": row.get("WIN_PCT", ""),
             }
             _merge_row(
                 team_entities,
@@ -326,6 +526,10 @@ def _prepare_existing_seasons(
 def _build_games(
     team_rows: Sequence[Mapping[str, object]],
     existing_team_rows: Sequence[Mapping[str, object]],
+    season: str | None = None,
+    season_type: str = "Regular Season",
+    known_game_types: Mapping[str, str] | None = None,
+    updated_at: str = "",
 ) -> list[Row]:
     rows_by_key: RowsByKey = {}
     headers: list[str] = []
@@ -351,14 +555,17 @@ def _build_games(
                 f"El partido {game_id} debe tener dos TEAM_ID distintos."
             )
 
-        matchups: list[tuple[str, str]] = []
-        metadata: tuple[str, str, str] | None = None
+        matchups: list[tuple[str, str, str, str]] = []
+        metadata: tuple[str, str] | None = None
+        score_by_team: dict[str, str] = {}
         for row in rows:
             matchup = _serialize_value(row["MATCHUP"]).strip()
             if " vs. " in matchup:
                 first, second = matchup.split(" vs. ", maxsplit=1)
+                home_away = "HOME"
             elif " @ " in matchup:
                 first, second = matchup.split(" @ ", maxsplit=1)
+                home_away = "AWAY"
             else:
                 raise CSVStorageError(
                     f"El partido {game_id} tiene un MATCHUP inválido: {matchup!r}."
@@ -369,10 +576,12 @@ def _build_games(
                     f"El partido {game_id} tiene un MATCHUP que no coincide "
                     "con sus equipos."
                 )
-            matchups.append((first, second))
-            row_metadata = tuple(
-                _serialize_value(row.get(column, "")).strip()
-                for column in ("SEASON_ID", "GAME_DATE", "VIDEO_AVAILABLE")
+            team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
+            matchups.append((first, second, home_away, team_id))
+            score_by_team[team_id] = _serialize_value(row.get("PTS", "")).strip()
+            row_metadata = (
+                _serialize_value(row.get("SEASON_ID", "")).strip(),
+                _serialize_value(row.get("GAME_DATE", "")).strip(),
             )
             if metadata is not None and row_metadata != metadata:
                 raise CSVStorageError(
@@ -380,20 +589,51 @@ def _build_games(
                 )
             metadata = row_metadata
 
-        if matchups[0] != (matchups[1][1], matchups[1][0]):
+        if (matchups[0][0], matchups[0][1]) != (
+            matchups[1][1],
+            matchups[1][0],
+        ):
             raise CSVStorageError(
                 f"El partido {game_id} tiene datos de MATCHUP inconsistentes."
             )
-        team_id_1, team_id_2 = sorted(team_ids, key=int)
-        season_id, game_date, video_available = metadata or ("", "", "")
+        home_rows = [row for row in matchups if row[2] == "HOME"]
+        away_rows = [row for row in matchups if row[2] == "AWAY"]
+        if len(home_rows) != 1 or len(away_rows) != 1:
+            raise CSVStorageError(
+                f"El partido {game_id} no identifica localía de forma inequívoca."
+            )
+        home_team_id = home_rows[0][3]
+        away_team_id = away_rows[0][3]
+        season_id, game_date = metadata or ("", "")
+        season_value = season or _season_from_id(season_id)
+        home_score = score_by_team.get(home_team_id, "")
+        away_score = score_by_team.get(away_team_id, "")
+        winner_team_id = ""
+        if home_score and away_score:
+            try:
+                home_points = int(float(home_score))
+                away_points = int(float(away_score))
+            except ValueError:
+                home_points = away_points = 0
+            if home_points > away_points:
+                winner_team_id = home_team_id
+            elif away_points > home_points:
+                winner_team_id = away_team_id
+        game_status = "Finalizado" if winner_team_id else ""
         games.append(
             {
                 "GAME_ID": game_id,
-                "SEASON_ID": season_id,
+                "SEASON": season_value,
+                "SEASON_TYPE": (known_game_types or {}).get(game_id, "") or season_type,
                 "GAME_DATE": game_date,
-                "TEAM_ID_1": team_id_1,
-                "TEAM_ID_2": team_id_2,
-                "VIDEO_AVAILABLE": video_available,
+                "GAME_STATUS": game_status,
+                "HOME_TEAM_ID": home_team_id,
+                "AWAY_TEAM_ID": away_team_id,
+                "HOME_TEAM_SCORE": home_score,
+                "AWAY_TEAM_SCORE": away_score,
+                "WINNER_TEAM_ID": winner_team_id,
+                "IS_NEUTRAL_SITE": "",
+                "LAST_UPDATED": updated_at,
             }
         )
     return games
@@ -430,6 +670,321 @@ def _validate_rows(
         normalized["TEAM_ID"] = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
         validated.append(normalized)
     return validated
+
+
+def _season_from_id(season_id: str) -> str:
+    if len(season_id) == 5 and season_id.isdigit():
+        start_year = int(season_id[1:])
+        if season_id[0] in {"2", "4", "5"}:
+            return f"{start_year}-{(start_year + 1) % 100:02d}"
+    return season_id
+
+
+def _season_type_from_id(season_id: str) -> str:
+    if len(season_id) == 5 and season_id.isdigit():
+        if season_id[0] == "2":
+            return "Regular Season"
+        if season_id[0] in {"4", "5"}:
+            return "Playoffs"
+    return ""
+
+
+def _update_team_records(
+    teams: RowsByKey,
+    team_stats: Sequence[Mapping[str, object]],
+    games: Sequence[Mapping[str, object]],
+    season: str,
+    updated_at: str,
+) -> None:
+    games_by_id = {
+        _serialize_value(game.get("GAME_ID", "")).strip(): game for game in games
+    }
+    records: dict[str, dict[str, int]] = {}
+    for stats in team_stats:
+        game_id = _serialize_value(stats.get("GAME_ID", "")).strip()
+        game = games_by_id.get(game_id)
+        if (
+            game is None
+            or _serialize_value(game.get("SEASON", "")).strip() != season
+            or _serialize_value(game.get("SEASON_TYPE", "")).strip() != "Regular Season"
+            or not _serialize_value(game.get("WINNER_TEAM_ID", "")).strip()
+        ):
+            continue
+        team_id = _serialize_value(stats.get("TEAM_ID", "")).strip()
+        if not team_id:
+            continue
+        record = records.setdefault(
+            team_id,
+            {
+                "WINS": 0,
+                "LOSSES": 0,
+                "HOME_WINS": 0,
+                "HOME_LOSSES": 0,
+                "AWAY_WINS": 0,
+                "AWAY_LOSSES": 0,
+                "HOME_GAMES": 0,
+                "AWAY_GAMES": 0,
+                "GAMES_PLAYED": 0,
+            },
+        )
+        is_win = _serialize_value(game.get("WINNER_TEAM_ID", "")).strip() == team_id
+        result = "WINS" if is_win else "LOSSES"
+        record[result] += 1
+        record["GAMES_PLAYED"] += 1
+        location = _serialize_value(stats.get("IS_HOME", "")).strip()
+        if location == "True":
+            record["HOME_GAMES"] += 1
+            record["HOME_WINS" if is_win else "HOME_LOSSES"] += 1
+        elif location == "False":
+            record["AWAY_GAMES"] += 1
+            record["AWAY_WINS" if is_win else "AWAY_LOSSES"] += 1
+
+    for team_id, record in records.items():
+        key = (team_id,)
+        if key not in teams or record["GAMES_PLAYED"] == 0:
+            continue
+        games_played = record["GAMES_PLAYED"]
+        record_row = {
+            "TEAM_ID": team_id,
+            **{name: str(record[name]) for name in ("WINS", "LOSSES", "GAMES_PLAYED")},
+            "WIN_PCT": f"{record['WINS'] / games_played:.3f}",
+            "LAST_UPDATED": updated_at,
+        }
+        if record["HOME_GAMES"] + record["AWAY_GAMES"] == games_played:
+            for name in (
+                "HOME_WINS",
+                "HOME_LOSSES",
+                "AWAY_WINS",
+                "AWAY_LOSSES",
+            ):
+                record_row[name] = str(record[name])
+        _merge_row(teams, list(_TEAM_CATALOG_COLUMNS), record_row, ("TEAM_ID",))
+
+
+def _map_existing_player(row: Mapping[str, object], headshot: str) -> CSVRow:
+    mapped = {
+        "PLAYER_ID": _serialize_value(row.get("PLAYER_ID", "")).strip(),
+        "PLAYER_NAME": _serialize_value(row.get("PLAYER_NAME", "")).strip(),
+        "PLAYER_HEADSHOT_URL": headshot,
+    }
+    for column in _PLAYER_CATALOG_COLUMNS:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            mapped[column] = value
+    mapped["PLAYER_HEADSHOT_URL"] = headshot
+
+    height_meters = _height_to_meters(row.get("HEIGHT", ""))
+    weight_kg = _pounds_to_kilograms(row.get("WEIGHT", ""))
+    college = _serialize_value(row.get("SCHOOL", "")).strip()
+    jersey_number = _serialize_value(row.get("JERSEY_NUM", "")).strip()
+    if height_meters and not mapped.get("HEIGHT_METERS"):
+        mapped["HEIGHT_METERS"] = height_meters
+    if weight_kg and not mapped.get("WEIGHT_KG"):
+        mapped["WEIGHT_KG"] = weight_kg
+    if college and not mapped.get("COLLEGE"):
+        mapped["COLLEGE"] = college
+    if jersey_number and not mapped.get("JERSEY_NUMBER"):
+        mapped["JERSEY_NUMBER"] = jersey_number
+    return mapped
+
+
+def _map_existing_team(row: Mapping[str, object]) -> CSVRow:
+    team_id = _serialize_value(row.get("TEAM_ID", "")).strip()
+    mapped = {
+        "TEAM_ID": team_id,
+        "TEAM_ABBREVIATION": _serialize_value(row.get("TEAM_ABBREVIATION", "")).strip(),
+        "TEAM_NAME": _serialize_value(row.get("TEAM_NAME", "")).strip(),
+        "TEAM_LOGO_URL": (
+            _serialize_value(row.get("TEAM_LOGO_URL", "")).strip()
+            or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
+        ),
+    }
+    for column in _TEAM_CATALOG_COLUMNS:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            mapped[column] = value
+    arena_name = _serialize_value(row.get("ARENA", "")).strip()
+    primary_color = _rgb_to_hex(row.get("PRIMARY_COLOR_RGB", ""))
+    secondary_color = _rgb_to_hex(row.get("SECONDARY_COLOR_RGB", ""))
+    if arena_name and not mapped.get("ARENA_NAME"):
+        mapped["ARENA_NAME"] = arena_name
+    if primary_color and not mapped.get("TEAM_PRIMARY_COLOR"):
+        mapped["TEAM_PRIMARY_COLOR"] = primary_color
+    if secondary_color and not mapped.get("TEAM_SECONDARY_COLOR"):
+        mapped["TEAM_SECONDARY_COLOR"] = secondary_color
+    return mapped
+
+
+def _height_to_meters(value: object) -> str:
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", _serialize_value(value))
+    if not match:
+        return ""
+    feet, inches = (int(part) for part in match.groups())
+    if inches > 11:
+        return ""
+    return f"{(feet * 12 + inches) * 0.0254:.2f}"
+
+
+def _pounds_to_kilograms(value: object) -> str:
+    text = _serialize_value(value).strip()
+    if not text.isdigit():
+        return ""
+    return f"{int(text) * 0.45359237:.2f}"
+
+
+def _rgb_to_hex(value: object) -> str:
+    text = _serialize_value(value).strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        return text.upper()
+    match = re.fullmatch(
+        r"\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*",
+        text,
+    )
+    if not match:
+        return ""
+    channels = [int(channel) for channel in match.groups()]
+    if any(channel > 255 for channel in channels):
+        return ""
+    return "#{:02X}{:02X}{:02X}".format(*channels)
+
+
+def _map_team_game_row(row: Mapping[str, object]) -> Row:
+    matchup = _serialize_value(row.get("MATCHUP", "")).strip()
+    is_home = _stat_value(row, "IS_HOME")
+    if not is_home:
+        if " vs. " in matchup:
+            is_home = "True"
+        elif " @ " in matchup:
+            is_home = "False"
+    return {
+        "GAME_ID": _stat_value(row, "GAME_ID"),
+        "TEAM_ID": _stat_value(row, "TEAM_ID"),
+        "IS_HOME": is_home,
+        "TEAM_POINTS": _stat_value(row, "TEAM_POINTS", "PTS"),
+        "FIELD_GOALS_MADE": _stat_value(row, "FIELD_GOALS_MADE", "FGM"),
+        "FIELD_GOALS_ATTEMPTED": _stat_value(row, "FIELD_GOALS_ATTEMPTED", "FGA"),
+        "FIELD_GOAL_PCT": _stat_value(row, "FIELD_GOAL_PCT", "FG_PCT"),
+        "THREE_POINTS_MADE": _stat_value(row, "THREE_POINTS_MADE", "FG3M"),
+        "THREE_POINTS_ATTEMPTED": _stat_value(row, "THREE_POINTS_ATTEMPTED", "FG3A"),
+        "THREE_POINT_PCT": _stat_value(row, "THREE_POINT_PCT", "FG3_PCT"),
+        "FREE_THROWS_MADE": _stat_value(row, "FREE_THROWS_MADE", "FTM"),
+        "FREE_THROWS_ATTEMPTED": _stat_value(row, "FREE_THROWS_ATTEMPTED", "FTA"),
+        "FREE_THROW_PCT": _stat_value(row, "FREE_THROW_PCT", "FT_PCT"),
+        "OFFENSIVE_REBOUNDS": _stat_value(row, "OFFENSIVE_REBOUNDS", "OREB"),
+        "DEFENSIVE_REBOUNDS": _stat_value(row, "DEFENSIVE_REBOUNDS", "DREB"),
+        "TOTAL_REBOUNDS": _stat_value(row, "TOTAL_REBOUNDS", "REB"),
+        "ASSISTS": _stat_value(row, "ASSISTS", "AST"),
+        "STEALS": _stat_value(row, "STEALS", "STL"),
+        "BLOCKS": _stat_value(row, "BLOCKS", "BLK"),
+        "TURNOVERS": _stat_value(row, "TURNOVERS", "TOV"),
+        "PERSONAL_FOULS": _stat_value(row, "PERSONAL_FOULS", "PF"),
+        "PLUS_MINUS": _serialize_value(row.get("PLUS_MINUS", "")).strip(),
+        "POINTS_IN_PAINT": _stat_value(row, "POINTS_IN_PAINT"),
+        "SECOND_CHANCE_POINTS": _stat_value(row, "SECOND_CHANCE_POINTS"),
+        "FAST_BREAK_POINTS": _stat_value(row, "FAST_BREAK_POINTS"),
+        "BENCH_POINTS": _stat_value(row, "BENCH_POINTS"),
+        "BIGGEST_LEAD": _stat_value(row, "BIGGEST_LEAD"),
+        "TEAM_TURNOVERS": _stat_value(row, "TEAM_TURNOVERS"),
+    }
+
+
+def _migrate_games(data_directory: Path) -> list[CSVRow]:
+    game_headers, game_rows = _read_existing(
+        data_directory / "games.csv",
+        ("GAME_ID",),
+    )
+    if {"SEASON", "HOME_TEAM_ID", "AWAY_TEAM_ID"}.issubset(game_headers):
+        return list(game_rows.values())
+
+    team_stats_path = data_directory / "team_game_stats.csv"
+    scores: dict[str, dict[str, str]] = {}
+    if team_stats_path.exists():
+        _, team_rows = _read_existing(team_stats_path, ("GAME_ID", "TEAM_ID"))
+        for row in team_rows.values():
+            game_id = _serialize_value(row.get("GAME_ID", "")).strip()
+            team_id = _serialize_value(row.get("TEAM_ID", "")).strip()
+            scores.setdefault(game_id, {})[team_id] = _serialize_value(
+                row.get("PTS", "")
+            ).strip()
+
+    migrated: list[CSVRow] = []
+    for key, row in game_rows.items():
+        game_id = key[0] if isinstance(key, tuple) else str(key)
+        season_id = _serialize_value(row.get("SEASON_ID", "")).strip()
+        season = _season_from_id(season_id)
+        team_id_1 = _serialize_value(row.get("TEAM_ID_1", "")).strip()
+        team_id_2 = _serialize_value(row.get("TEAM_ID_2", "")).strip()
+        team_scores = scores.get(game_id, {})
+        score_1 = team_scores.get(team_id_1, "")
+        score_2 = team_scores.get(team_id_2, "")
+        winner_team_id = ""
+        if score_1 and score_2:
+            try:
+                if int(float(score_1)) > int(float(score_2)):
+                    winner_team_id = team_id_1
+                elif int(float(score_2)) > int(float(score_1)):
+                    winner_team_id = team_id_2
+            except ValueError:
+                winner_team_id = ""
+        migrated.append(
+            {
+                "GAME_ID": game_id,
+                "SEASON": season,
+                "SEASON_TYPE": _season_type_from_id(season_id),
+                "GAME_DATE": _serialize_value(row.get("GAME_DATE", "")).strip(),
+                "GAME_STATUS": "Finalizado" if winner_team_id else "",
+                "HOME_TEAM_ID": "",
+                "AWAY_TEAM_ID": "",
+                "HOME_TEAM_SCORE": "",
+                "AWAY_TEAM_SCORE": "",
+                "WINNER_TEAM_ID": winner_team_id,
+                "IS_NEUTRAL_SITE": "",
+            }
+        )
+    return migrated
+
+
+def _map_player_game_row(row: Mapping[str, object]) -> Row:
+    return {
+        "GAME_ID": _stat_value(row, "GAME_ID"),
+        "PLAYER_ID": _stat_value(row, "PLAYER_ID"),
+        "TEAM_ID": _stat_value(row, "TEAM_ID"),
+        "IS_STARTER": _stat_value(row, "IS_STARTER"),
+        "MINUTES": _stat_value(row, "MINUTES", "MIN"),
+        "POINTS": _stat_value(row, "POINTS", "PTS"),
+        "FIELD_GOALS_MADE": _stat_value(row, "FIELD_GOALS_MADE", "FGM"),
+        "FIELD_GOALS_ATTEMPTED": _stat_value(row, "FIELD_GOALS_ATTEMPTED", "FGA"),
+        "FIELD_GOAL_PCT": _stat_value(row, "FIELD_GOAL_PCT", "FG_PCT"),
+        "THREE_POINTS_MADE": _stat_value(row, "THREE_POINTS_MADE", "FG3M"),
+        "THREE_POINTS_ATTEMPTED": _stat_value(row, "THREE_POINTS_ATTEMPTED", "FG3A"),
+        "THREE_POINT_PCT": _stat_value(row, "THREE_POINT_PCT", "FG3_PCT"),
+        "FREE_THROWS_MADE": _stat_value(row, "FREE_THROWS_MADE", "FTM"),
+        "FREE_THROWS_ATTEMPTED": _stat_value(row, "FREE_THROWS_ATTEMPTED", "FTA"),
+        "FREE_THROW_PCT": _stat_value(row, "FREE_THROW_PCT", "FT_PCT"),
+        "OFFENSIVE_REBOUNDS": _stat_value(row, "OFFENSIVE_REBOUNDS", "OREB"),
+        "DEFENSIVE_REBOUNDS": _stat_value(row, "DEFENSIVE_REBOUNDS", "DREB"),
+        "TOTAL_REBOUNDS": _stat_value(row, "TOTAL_REBOUNDS", "REB"),
+        "ASSISTS": _stat_value(row, "ASSISTS", "AST"),
+        "STEALS": _stat_value(row, "STEALS", "STL"),
+        "BLOCKS": _stat_value(row, "BLOCKS", "BLK"),
+        "TURNOVERS": _stat_value(row, "TURNOVERS", "TOV"),
+        "PERSONAL_FOULS": _stat_value(row, "PERSONAL_FOULS", "PF"),
+        "PLUS_MINUS": _serialize_value(row.get("PLUS_MINUS", "")).strip(),
+        "DOUBLE_DOUBLES": _stat_value(row, "DOUBLE_DOUBLES"),
+        "TRIPLE_DOUBLES": _stat_value(row, "TRIPLE_DOUBLES"),
+        "FOULS_DRAWN": _stat_value(row, "FOULS_DRAWN"),
+        "POINTS_OFF_TURNOVERS": _stat_value(row, "POINTS_OFF_TURNOVERS"),
+        "POINTS_IN_PAINT": _stat_value(row, "POINTS_IN_PAINT"),
+        "SECOND_CHANCE_POINTS": _stat_value(row, "SECOND_CHANCE_POINTS"),
+    }
+
+
+def _stat_value(row: Mapping[str, object], *columns: str) -> str:
+    for column in columns:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            return value
+    return ""
 
 
 def _prepare_table(

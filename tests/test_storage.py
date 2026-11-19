@@ -67,49 +67,28 @@ def test_creates_csvs_with_image_urls_games_and_game_stats(
         path.read_bytes().startswith(b"\xef\xbb\xbf")
         for path in data_directory.glob("*.csv")
     )
-    assert read_csv(data_directory / "players.csv") == [
-        {
-            "PLAYER_ID": "23",
-            "PLAYER_NAME": "Player One",
-            "PLAYER_FACE_URL": (
-                "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
-            ),
-            "HEIGHT": "",
-            "WEIGHT": "",
-            "SCHOOL": "",
-            "INDIVIDUAL_ACHIEVEMENTS": "",
-        }
-    ]
-    assert read_csv(data_directory / "teams.csv") == [
-        {
-            "TEAM_ID": "1",
-            "TEAM_ABBREVIATION": "TST",
-            "TEAM_NAME": "Test Team",
-            "TEAM_LOGO_URL": "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg",
-            "PRIMARY_COLOR_RGB": "",
-            "SECONDARY_COLOR_RGB": "",
-            "COLOR_SOURCE_URL": "",
-        },
-        {
-            "TEAM_ID": "2",
-            "TEAM_ABBREVIATION": "OPP",
-            "TEAM_NAME": "Opponent Team",
-            "TEAM_LOGO_URL": "https://cdn.nba.com/logos/nba/2/primary/L/logo.svg",
-            "PRIMARY_COLOR_RGB": "",
-            "SECONDARY_COLOR_RGB": "",
-            "COLOR_SOURCE_URL": "",
-        },
-    ]
-    assert read_csv(data_directory / "games.csv") == [
-        {
-            "GAME_ID": "001",
-            "SEASON_ID": "2026-27",
-            "GAME_DATE": "2026-10-20",
-            "TEAM_ID_1": "1",
-            "TEAM_ID_2": "2",
-            "VIDEO_AVAILABLE": "1",
-        }
-    ]
+    players = read_csv(data_directory / "players.csv")
+    assert len(players) == 1
+    assert players[0]["PLAYER_ID"] == "23"
+    assert players[0]["PLAYER_NAME"] == "Player One"
+    assert players[0]["PLAYER_HEADSHOT_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
+    )
+    assert "PLAYER_FACE_URL" not in players[0]
+    teams = read_csv(data_directory / "teams.csv")
+    assert len(teams) == 2
+    assert teams[0]["TEAM_ID"] == "1"
+    assert teams[0]["TEAM_ABBREVIATION"] == "TST"
+    assert teams[0]["TEAM_NAME"] == "Test Team"
+    assert teams[0]["TEAM_LOGO_URL"] == (
+        "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg"
+    )
+    games = read_csv(data_directory / "games.csv")
+    assert games[0]["GAME_ID"] == "001"
+    assert games[0]["SEASON"] == "2026-27"
+    assert games[0]["HOME_TEAM_ID"] == "1"
+    assert games[0]["AWAY_TEAM_ID"] == "2"
+    assert games[0]["HOME_TEAM_SCORE"] == "100"
     player_stats = read_csv(data_directory / "player_game_stats.csv")[0]
     team_stats = read_csv(data_directory / "team_game_stats.csv")[0]
     assert player_stats["PLAYER_ID"] == "23"
@@ -166,13 +145,13 @@ def test_accumulates_games_and_updates_catalog_rows(tmp_path: Path) -> None:
     assert len(teams) == 4
     assert len(player_stats) == 2
     assert len(team_stats) == 4
-    assert player_stats[0]["PTS"] == "12"
+    assert player_stats[0]["POINTS"] == "12"
     assert [row["TEAM_ID"] for row in player_stats] == ["1", "2"]
-    assert team_stats[0]["PTS"] == "102"
+    assert team_stats[0]["TEAM_POINTS"] == "102"
     games = read_csv(data_directory / "games.csv")
     assert [row["GAME_ID"] for row in games] == ["001", "002"]
-    assert games[1]["TEAM_ID_1"] == "3"
-    assert games[1]["TEAM_ID_2"] == "4"
+    assert games[1]["HOME_TEAM_ID"] == "3"
+    assert games[1]["AWAY_TEAM_ID"] == "4"
 
 
 def test_existing_catalogs_are_reduced_to_the_core_columns(tmp_path: Path) -> None:
@@ -189,33 +168,18 @@ def test_existing_catalogs_are_reduced_to_the_core_columns(tmp_path: Path) -> No
 
     save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS)
 
-    assert read_csv(data_directory / "players.csv")[0] == {
-        "PLAYER_ID": "23",
-        "PLAYER_NAME": "Player One",
-        "PLAYER_FACE_URL": ("https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"),
-        "HEIGHT": "",
-        "WEIGHT": "",
-        "SCHOOL": "",
-        "INDIVIDUAL_ACHIEVEMENTS": "",
-    }
-    assert read_csv(data_directory / "teams.csv")[0] == {
-        "TEAM_ID": "1",
-        "TEAM_ABBREVIATION": "TST",
-        "TEAM_NAME": "Test Team",
-        "TEAM_LOGO_URL": "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg",
-        "PRIMARY_COLOR_RGB": "",
-        "SECONDARY_COLOR_RGB": "",
-        "COLOR_SOURCE_URL": "",
-    }
-    assert read_csv(data_directory / "players.csv")[1] == {
-        "PLAYER_ID": "24",
-        "PLAYER_NAME": "Legacy Player",
-        "PLAYER_FACE_URL": "assets/player_silhouette.png",
-        "HEIGHT": "",
-        "WEIGHT": "",
-        "SCHOOL": "",
-        "INDIVIDUAL_ACHIEVEMENTS": "",
-    }
+    players = read_csv(data_directory / "players.csv")
+    teams = read_csv(data_directory / "teams.csv")
+    assert players[0]["PLAYER_ID"] == "23"
+    assert players[0]["PLAYER_HEADSHOT_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
+    )
+    assert teams[0]["TEAM_ID"] == "1"
+    assert teams[0]["TEAM_LOGO_URL"] == (
+        "https://cdn.nba.com/logos/nba/1/primary/L/logo.svg"
+    )
+    assert players[1]["PLAYER_ID"] == "24"
+    assert players[1]["PLAYER_HEADSHOT_URL"] == "assets/player_silhouette.png"
     image = Path(__file__).parents[1] / "assets" / "player_silhouette.png"
     assert image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
@@ -248,20 +212,23 @@ def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None
     teams = read_csv(data_directory / "teams.csv")
     player_seasons = read_csv(data_directory / "player_seasons.csv")
     team_seasons = read_csv(data_directory / "team_seasons.csv")
-    assert players[0] == {
-        "PLAYER_ID": "23",
-        "PLAYER_NAME": "Player One",
-        "PLAYER_FACE_URL": ("https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"),
-        "HEIGHT": "6-4",
-        "WEIGHT": "200",
-        "SCHOOL": "Example University",
-        "INDIVIDUAL_ACHIEVEMENTS": "All-Star",
-    }
+    assert players[0]["PLAYER_ID"] == "23"
+    assert players[0]["PLAYER_HEADSHOT_URL"] == (
+        "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
+    )
+    assert players[0]["COLLEGE"] == "Example University"
+    assert players[0]["POSITION"] == "G"
+    assert players[0]["JERSEY_NUMBER"] == "00"
+    assert players[0]["HEIGHT_METERS"] == "1.93"
+    assert players[0]["WEIGHT_KG"] == "90.72"
     assert players[1]["PLAYER_ID"] == "24"
-    assert players[1]["INDIVIDUAL_ACHIEVEMENTS"] == ""
-    assert teams[0]["PRIMARY_COLOR_RGB"] == "10"
-    assert teams[0]["SECONDARY_COLOR_RGB"] == "20"
-    assert teams[0]["COLOR_SOURCE_URL"] == "https://example.com/colors/1"
+    assert teams[0]["WINS"] == "3"
+    assert teams[0]["LOSSES"] == "4"
+    assert teams[0]["GAMES_PLAYED"] == "7"
+    assert teams[0]["HOME_WINS"] == ""
+    assert teams[0]["HOME_LOSSES"] == ""
+    assert teams[0]["AWAY_WINS"] == ""
+    assert teams[0]["AWAY_LOSSES"] == ""
     assert teams[1]["TEAM_ID"] == "2"
     assert teams[1]["TEAM_LOGO_URL"] == (
         "https://cdn.nba.com/logos/nba/2/primary/L/logo.svg"
@@ -310,6 +277,62 @@ def test_empty_results_do_not_create_or_change_files(tmp_path: Path) -> None:
     assert {
         path.name: path.read_bytes() for path in data_directory.glob("*.csv")
     } == originals
+
+
+def test_empty_update_preserves_migrated_games(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS, season="2026-27")
+    games_path = data_directory / "games.csv"
+    original = games_path.read_bytes()
+
+    save_game_logs(data_directory, [], [])
+
+    assert games_path.read_bytes() == original
+
+
+def test_regular_standings_are_not_changed_by_playoff_results(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    save_game_logs(
+        data_directory,
+        PLAYER_ROWS,
+        TEAM_ROWS,
+        season="2026-27",
+        season_type="Regular Season",
+    )
+    playoff_teams = [
+        {
+            **TEAM_ROWS[0],
+            "GAME_ID": "002",
+            "SEASON_ID": "42026",
+            "PTS": 105,
+        },
+        {
+            **TEAM_ROWS[1],
+            "GAME_ID": "002",
+            "SEASON_ID": "42026",
+            "PTS": 100,
+        },
+    ]
+
+    save_game_logs(
+        data_directory,
+        [],
+        playoff_teams,
+        season="2026-27",
+        season_type="Playoffs",
+    )
+
+    games = read_csv(data_directory / "games.csv")
+    teams = {row["TEAM_ID"]: row for row in read_csv(data_directory / "teams.csv")}
+    assert {row["GAME_ID"]: row["SEASON_TYPE"] for row in games} == {
+        "001": "Regular Season",
+        "002": "Playoffs",
+    }
+    assert teams["1"]["WINS"] == "1"
+    assert teams["1"]["LOSSES"] == "0"
+    assert teams["1"]["GAMES_PLAYED"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -389,29 +412,19 @@ def test_migrates_existing_game_metadata_to_games_csv(tmp_path: Path) -> None:
     counts = save_game_logs(data_directory, [], [])
 
     assert counts == {"P": 1, "T": 2}
-    assert read_csv(data_directory / "games.csv") == [
-        {
-            "GAME_ID": "001",
-            "SEASON_ID": "2026-27",
-            "GAME_DATE": "2026-10-20",
-            "TEAM_ID_1": "1",
-            "TEAM_ID_2": "2",
-            "VIDEO_AVAILABLE": "1",
-        }
-    ]
-    assert list(read_csv(data_directory / "player_game_stats.csv")[0]) == [
-        "PLAYER_ID",
-        "TEAM_ID",
-        "GAME_ID",
-        "WL",
-        "PTS",
-    ]
-    assert list(read_csv(data_directory / "team_game_stats.csv")[0]) == [
-        "TEAM_ID",
-        "GAME_ID",
-        "WL",
-        "PTS",
-    ]
+    games = read_csv(data_directory / "games.csv")
+    assert games[0]["GAME_ID"] == "001"
+    assert games[0]["SEASON"] == "2026-27"
+    assert games[0]["GAME_DATE"] == "2026-10-20"
+    assert games[0]["HOME_TEAM_ID"] == "1"
+    assert games[0]["AWAY_TEAM_ID"] == "2"
+    assert games[0]["WINNER_TEAM_ID"] == "1"
+    player_stats = read_csv(data_directory / "player_game_stats.csv")[0]
+    team_stats = read_csv(data_directory / "team_game_stats.csv")
+    assert player_stats["PLAYER_ID"] == "23"
+    assert player_stats["POINTS"] == "10"
+    assert len(team_stats) == 2
+    assert team_stats[0]["TEAM_POINTS"] == "100"
 
 
 def test_rejects_game_with_inconsistent_matchups_without_writing(

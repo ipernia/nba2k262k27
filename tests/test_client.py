@@ -107,6 +107,84 @@ def test_retries_a_failed_request(monkeypatch: pytest.MonkeyPatch) -> None:
     assert delays == [0.25]
 
 
+def test_retry_delay_uses_exponential_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def endpoint_factory(**kwargs: object) -> FakeEndpoint:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise TimeoutError("network timeout")
+        return FakeEndpoint(_game_rows(str(kwargs["player_or_team_abbreviation"])))
+
+    monkeypatch.setattr("nba_stats.client.time.sleep", delays.append)
+
+    fetch_league_game_logs(
+        "2026-27",
+        max_attempts=3,
+        retry_delay_seconds=0.1,
+        endpoint_factory=endpoint_factory,
+    )
+
+    assert delays == [0.1, 0.2]
+
+
+def test_respects_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    class TooManyRequestsError(Exception):
+        response = type(
+            "Response", (), {"status_code": 429, "headers": {"Retry-After": "4"}}
+        )()
+
+    calls = 0
+    delays: list[float] = []
+
+    def endpoint_factory(**kwargs: object) -> FakeEndpoint:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TooManyRequestsError("rate limited")
+        return FakeEndpoint(_game_rows(str(kwargs["player_or_team_abbreviation"])))
+
+    monkeypatch.setattr("nba_stats.client.time.sleep", delays.append)
+
+    fetch_league_game_logs(
+        "2026-27",
+        max_attempts=2,
+        retry_delay_seconds=0.1,
+        endpoint_factory=endpoint_factory,
+    )
+
+    assert delays == [4.0]
+
+
+def test_does_not_retry_forbidden_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ForbiddenError(Exception):
+        response = type("Response", (), {"status_code": 403, "headers": {}})()
+
+    calls = 0
+    delays: list[float] = []
+
+    def endpoint_factory(**kwargs: object) -> FakeEndpoint:
+        nonlocal calls
+        calls += 1
+        raise ForbiddenError("forbidden")
+
+    monkeypatch.setattr("nba_stats.client.time.sleep", delays.append)
+
+    with pytest.raises(NBAStatsError, match="HTTP 403"):
+        fetch_league_game_logs(
+            "2026-27",
+            max_attempts=3,
+            endpoint_factory=endpoint_factory,
+        )
+
+    assert calls == 1
+    assert delays == []
+
+
 def test_raises_after_retry_limit() -> None:
     calls = 0
 
@@ -196,6 +274,7 @@ def test_main_updates_only_core_csvs_from_game_logs(
     ) -> dict[str, list[dict[str, object]]]:
         calls.append(season)
         assert kwargs == {
+            "season_type": "Regular Season",
             "max_attempts": 3,
             "retry_delay_seconds": 2,
             "timeout_seconds": 30,
@@ -225,7 +304,7 @@ def test_main_updates_only_core_csvs_from_game_logs(
         encoding="utf-8-sig", newline=""
     ) as csv_file:
         team = next(csv.DictReader(csv_file))
-    assert player["PLAYER_FACE_URL"] == (
+    assert player["PLAYER_HEADSHOT_URL"] == (
         "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
     )
     assert team["TEAM_LOGO_URL"] == (

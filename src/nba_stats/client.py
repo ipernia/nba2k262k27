@@ -6,6 +6,8 @@ import math
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Protocol, runtime_checkable
 
 
@@ -53,6 +55,7 @@ _SEASON_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 def fetch_league_game_logs(
     season: str,
     *,
+    season_type: str = "Regular Season",
     max_attempts: int = 3,
     retry_delay_seconds: float = 2,
     timeout_seconds: int = 30,
@@ -71,6 +74,8 @@ def fetch_league_game_logs(
     _validate_request_options(
         season, max_attempts, retry_delay_seconds, timeout_seconds
     )
+    if season_type not in ("Regular Season", "Playoffs"):
+        raise ValueError("season_type debe ser Regular Season o Playoffs.")
     if endpoint_factory is None:
         try:
             from nba_api.stats.endpoints import LeagueGameLog
@@ -85,6 +90,7 @@ def fetch_league_game_logs(
     for player_or_team in ("P", "T"):
         results[player_or_team] = _fetch_one_game_log(
             season=season,
+            season_type=season_type,
             player_or_team=player_or_team,
             endpoint_factory=endpoint_factory,
             max_attempts=max_attempts,
@@ -130,6 +136,7 @@ def _validate_request_options(
 def _fetch_one_game_log(
     *,
     season: str,
+    season_type: str,
     player_or_team: str,
     endpoint_factory: EndpointFactory,
     max_attempts: int,
@@ -141,7 +148,7 @@ def _fetch_one_game_log(
             endpoint = endpoint_factory(
                 player_or_team_abbreviation=player_or_team,
                 season=season,
-                season_type_all_star="Regular Season",
+                season_type_all_star=season_type,
                 timeout=timeout_seconds,
             )
             frames = endpoint.get_data_frames()
@@ -156,13 +163,21 @@ def _fetch_one_game_log(
         except NBAStatsError:
             raise
         except Exception as error:
+            status_code = _http_status(error)
+            if not _is_retryable(error, status_code):
+                raise NBAStatsError(
+                    f"Falló la consulta de "
+                    f"{'jugadores' if player_or_team == 'P' else 'equipos'}"
+                    f"{f' (HTTP {status_code})' if status_code else ''}; "
+                    "el error no admite reintento."
+                ) from error
             if attempt == max_attempts:
                 raise NBAStatsError(
                     f"No se pudieron descargar los registros "
                     f"{'de jugadores' if player_or_team == 'P' else 'de equipos'} "
                     f"tras {max_attempts} intentos."
                 ) from error
-            time.sleep(retry_delay_seconds)
+            time.sleep(_retry_delay(error, retry_delay_seconds, attempt))
             continue
 
         if not isinstance(rows, list) or any(
@@ -180,3 +195,46 @@ def _fetch_one_game_log(
         return [dict(row) for row in rows]
 
     raise NBAStatsError("La consulta terminó sin un resultado válido.")
+
+
+def _http_status(error: Exception) -> int | None:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None) or getattr(
+        error, "status_code", None
+    )
+    return status if isinstance(status, int) else None
+
+
+def _is_retryable(error: Exception, status_code: int | None) -> bool:
+    if status_code is not None:
+        return status_code == 429 or 500 <= status_code <= 599
+    retryable_names = {
+        "ConnectTimeout",
+        "ConnectionError",
+        "ReadTimeout",
+        "Timeout",
+        "TimeoutError",
+    }
+    return any(base.__name__ in retryable_names for base in type(error).__mro__)
+
+
+def _retry_delay(error: Exception, base_delay: float, attempt: int) -> float:
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if headers is None:
+        headers = getattr(error, "headers", None)
+    retry_after = headers.get("Retry-After") if headers else None
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(
+                    0.0,
+                    (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return base_delay * 2 ** (attempt - 1)
