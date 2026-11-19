@@ -5,8 +5,10 @@ from __future__ import annotations
 import csv
 import math
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from numbers import Integral, Real
 from pathlib import Path
 from typing import TypeAlias
@@ -34,7 +36,6 @@ _TEAM_REQUIRED_COLUMNS = (
     "TEAM_ABBREVIATION",
     "TEAM_NAME",
 )
-_GAME_COLUMNS = frozenset({"SEASON_ID", "GAME_DATE", "MATCHUP", "VIDEO_AVAILABLE"})
 _GAME_CATALOG_COLUMNS = (
     "GAME_ID",
     "SEASON",
@@ -67,7 +68,6 @@ _PLAYER_CATALOG_COLUMNS = (
     "COUNTRY_CODE",
     "FLAG_URL",
     "BIRTH_DATE",
-    "AGE",
     "HEIGHT_METERS",
     "WEIGHT_KG",
     "POSITION",
@@ -216,6 +216,7 @@ def save_game_logs(
     """Acumula catálogos y estadísticas, normalizando temporadas existentes."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
     teams = _validate_rows(team_rows, _TEAM_REQUIRED_COLUMNS, "equipos")
+    updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     player_season_entities, team_season_entities, season_tables = (
         _prepare_existing_seasons(data_directory)
@@ -243,6 +244,21 @@ def save_game_logs(
             row,
             ("PLAYER_ID",),
         )
+    archived_players_path = data_directory / "old" / "players.csv"
+    if archived_players_path.exists():
+        _, archived_players = _read_existing(archived_players_path, ("PLAYER_ID",))
+        for row in archived_players.values():
+            player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
+            _merge_row(
+                player_catalog,
+                list(_PLAYER_CATALOG_COLUMNS),
+                _map_existing_player(
+                    row,
+                    row.get("PLAYER_FACE_URL", "").strip()
+                    or f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+                ),
+                ("PLAYER_ID",),
+            )
     for row in players:
         player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
         _merge_row(
@@ -254,6 +270,7 @@ def save_game_logs(
                 "PLAYER_HEADSHOT_URL": (
                     f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
                 ),
+                "LAST_UPDATED": updated_at,
             },
             ("PLAYER_ID",),
         )
@@ -276,6 +293,16 @@ def save_game_logs(
             row,
             ("TEAM_ID",),
         )
+    archived_teams_path = data_directory / "old" / "teams.csv"
+    if archived_teams_path.exists():
+        _, archived_teams = _read_existing(archived_teams_path, ("TEAM_ID",))
+        for row in archived_teams.values():
+            _merge_row(
+                team_catalog,
+                list(_TEAM_CATALOG_COLUMNS),
+                _map_existing_team(row),
+                ("TEAM_ID",),
+            )
     for row in teams:
         team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
         _merge_row(
@@ -288,11 +315,12 @@ def save_game_logs(
                 "TEAM_LOGO_URL": (
                     f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
                 ),
+                "LAST_UPDATED": updated_at,
             },
             ("TEAM_ID",),
         )
 
-    player_stats = [_map_player_game_row(row) for row in players]
+    player_stats: list[Row] = []
     existing_player_stats_path = data_directory / "player_game_stats.csv"
     if existing_player_stats_path.exists():
         _, existing_player_stats_by_key = _read_existing(
@@ -301,8 +329,9 @@ def save_game_logs(
         player_stats.extend(
             _map_player_game_row(row) for row in existing_player_stats_by_key.values()
         )
+    player_stats.extend(_map_player_game_row(row) for row in players)
 
-    team_stats = [_map_team_game_row(row) for row in teams]
+    team_stats: list[Row] = []
     existing_team_stats: list[CSVRow] = []
     team_stats_path = data_directory / "team_game_stats.csv"
     if team_stats_path.exists():
@@ -311,18 +340,40 @@ def save_game_logs(
         )
         existing_team_stats = list(existing_team_stats_by_key.values())
         team_stats.extend(_map_team_game_row(row) for row in existing_team_stats)
+    team_stats.extend(_map_team_game_row(row) for row in teams)
+    games_path = data_directory / "games.csv"
     if teams:
         incoming_game_ids = {_row_key(row, ("GAME_ID",))[0] for row in teams}
-        existing_team_stats = [
+        game_team_rows = [
             row
             for row in existing_team_stats
             if _row_key(row, ("GAME_ID",))[0] in incoming_game_ids
         ]
-        games = _build_games(teams, existing_team_stats, season, season_type)
-    elif not (data_directory / "games.csv").exists():
-        games = _build_games([], existing_team_stats, season, season_type)
-    else:
+        known_games = _migrate_games(data_directory) if games_path.exists() else []
+        known_by_id: RowsByKey = {}
+        game_headers = list(_GAME_CATALOG_COLUMNS)
+        for row in known_games:
+            _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
+        known_game_types = {
+            key[0]: row.get("SEASON_TYPE", "") for key, row in known_by_id.items()
+        }
+        updated_games = _build_games(
+            teams,
+            game_team_rows,
+            season,
+            season_type,
+            known_game_types,
+            updated_at,
+        )
+        for row in updated_games:
+            _merge_row(known_by_id, game_headers, row, ("GAME_ID",))
+        games = list(known_by_id.values())
+    elif games_path.exists():
         games = _migrate_games(data_directory)
+    else:
+        games = _build_games([], existing_team_stats, season, season_type)
+    if season:
+        _update_team_records(team_catalog, team_stats, games, season, updated_at)
 
     tables = (
         (
@@ -384,7 +435,7 @@ def save_game_logs(
 
 def _prepare_existing_seasons(
     data_directory: Path,
-) -> tuple[list[Row], list[Row], list[PreparedTable]]:
+) -> tuple[list[CSVRow], list[CSVRow], list[PreparedTable]]:
     player_entities: RowsByKey = {}
     team_entities: RowsByKey = {}
     season_tables: list[PreparedTable] = []
@@ -394,17 +445,21 @@ def _prepare_existing_seasons(
         _, rows = _read_existing(player_season_path, _PLAYER_SEASON_KEY)
         for row in rows.values():
             player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
-            player = {
-                column: row.get(column, "")
-                for column in _PLAYER_CATALOG_COLUMNS
-                if column not in {"PLAYER_ID", "PLAYER_FACE_URL"}
-            }
-            player["PLAYER_ID"] = player_id
-            player["PLAYER_HEADSHOT_URL"] = (
-                f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+            player = _map_existing_player(
+                row,
+                row.get("PLAYER_HEADSHOT_URL", "").strip()
+                or row.get("PLAYER_FACE_URL", "").strip()
+                or f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
             )
+            player["PLAYER_ID"] = player_id
+            height_meters = _height_to_meters(row.get("HEIGHT", ""))
+            weight_kg = _pounds_to_kilograms(row.get("WEIGHT", ""))
+            if height_meters:
+                player["HEIGHT_METERS"] = height_meters
+            if weight_kg:
+                player["WEIGHT_KG"] = weight_kg
             if row.get("SCHOOL", "").strip():
-                player["COLLEGE"] = row["SCHOOL"]
+                player["COLLEGE"] = row["SCHOOL"].strip()
             if row.get("POSITION", "").strip():
                 player["POSITION"] = row["POSITION"]
             if row.get("JERSEY_NUM", "").strip():
@@ -441,6 +496,8 @@ def _prepare_existing_seasons(
                 "TEAM_ID": team_id,
                 "TEAM_LOGO_URL": row.get("TEAM_LOGO_URL", "")
                 or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg",
+                "TEAM_PRIMARY_COLOR": _rgb_to_hex(row.get("PRIMARY_COLOR_RGB", "")),
+                "TEAM_SECONDARY_COLOR": _rgb_to_hex(row.get("SECONDARY_COLOR_RGB", "")),
                 "CONFERENCE": row.get("CONFERENCE", ""),
                 "DIVISION": row.get("DIVISION", ""),
                 "WINS": wins,
@@ -471,6 +528,8 @@ def _build_games(
     existing_team_rows: Sequence[Mapping[str, object]],
     season: str | None = None,
     season_type: str = "Regular Season",
+    known_game_types: Mapping[str, str] | None = None,
+    updated_at: str = "",
 ) -> list[Row]:
     rows_by_key: RowsByKey = {}
     headers: list[str] = []
@@ -499,7 +558,6 @@ def _build_games(
         matchups: list[tuple[str, str, str, str]] = []
         metadata: tuple[str, str] | None = None
         score_by_team: dict[str, str] = {}
-        wl_by_team: dict[str, str] = {}
         for row in rows:
             matchup = _serialize_value(row["MATCHUP"]).strip()
             if " vs. " in matchup:
@@ -521,7 +579,6 @@ def _build_games(
             team_id = _numeric_identifier(row["TEAM_ID"], "TEAM_ID")
             matchups.append((first, second, home_away, team_id))
             score_by_team[team_id] = _serialize_value(row.get("PTS", "")).strip()
-            wl_by_team[team_id] = _serialize_value(row.get("WL", "")).strip()
             row_metadata = (
                 _serialize_value(row.get("SEASON_ID", "")).strip(),
                 _serialize_value(row.get("GAME_DATE", "")).strip(),
@@ -567,7 +624,7 @@ def _build_games(
             {
                 "GAME_ID": game_id,
                 "SEASON": season_value,
-                "SEASON_TYPE": season_type,
+                "SEASON_TYPE": (known_game_types or {}).get(game_id, "") or season_type,
                 "GAME_DATE": game_date,
                 "GAME_STATUS": game_status,
                 "HOME_TEAM_ID": home_team_id,
@@ -575,7 +632,8 @@ def _build_games(
                 "HOME_TEAM_SCORE": home_score,
                 "AWAY_TEAM_SCORE": away_score,
                 "WINNER_TEAM_ID": winner_team_id,
-                "IS_NEUTRAL_SITE": "False",
+                "IS_NEUTRAL_SITE": "",
+                "LAST_UPDATED": updated_at,
             }
         )
     return games
@@ -615,23 +673,124 @@ def _validate_rows(
 
 
 def _season_from_id(season_id: str) -> str:
-    if season_id.startswith("2") and len(season_id) == 5:
+    if len(season_id) == 5 and season_id.isdigit():
         start_year = int(season_id[1:])
-        return f"{start_year}-{(start_year + 1) % 100:02d}"
+        if season_id[0] in {"2", "4", "5"}:
+            return f"{start_year}-{(start_year + 1) % 100:02d}"
     return season_id
 
 
+def _season_type_from_id(season_id: str) -> str:
+    if len(season_id) == 5 and season_id.isdigit():
+        if season_id[0] == "2":
+            return "Regular Season"
+        if season_id[0] in {"4", "5"}:
+            return "Playoffs"
+    return ""
+
+
+def _update_team_records(
+    teams: RowsByKey,
+    team_stats: Sequence[Mapping[str, object]],
+    games: Sequence[Mapping[str, object]],
+    season: str,
+    updated_at: str,
+) -> None:
+    games_by_id = {
+        _serialize_value(game.get("GAME_ID", "")).strip(): game for game in games
+    }
+    records: dict[str, dict[str, int]] = {}
+    for stats in team_stats:
+        game_id = _serialize_value(stats.get("GAME_ID", "")).strip()
+        game = games_by_id.get(game_id)
+        if (
+            game is None
+            or _serialize_value(game.get("SEASON", "")).strip() != season
+            or _serialize_value(game.get("SEASON_TYPE", "")).strip() != "Regular Season"
+            or not _serialize_value(game.get("WINNER_TEAM_ID", "")).strip()
+        ):
+            continue
+        team_id = _serialize_value(stats.get("TEAM_ID", "")).strip()
+        if not team_id:
+            continue
+        record = records.setdefault(
+            team_id,
+            {
+                "WINS": 0,
+                "LOSSES": 0,
+                "HOME_WINS": 0,
+                "HOME_LOSSES": 0,
+                "AWAY_WINS": 0,
+                "AWAY_LOSSES": 0,
+                "HOME_GAMES": 0,
+                "AWAY_GAMES": 0,
+                "GAMES_PLAYED": 0,
+            },
+        )
+        is_win = _serialize_value(game.get("WINNER_TEAM_ID", "")).strip() == team_id
+        result = "WINS" if is_win else "LOSSES"
+        record[result] += 1
+        record["GAMES_PLAYED"] += 1
+        location = _serialize_value(stats.get("IS_HOME", "")).strip()
+        if location == "True":
+            record["HOME_GAMES"] += 1
+            record["HOME_WINS" if is_win else "HOME_LOSSES"] += 1
+        elif location == "False":
+            record["AWAY_GAMES"] += 1
+            record["AWAY_WINS" if is_win else "AWAY_LOSSES"] += 1
+
+    for team_id, record in records.items():
+        key = (team_id,)
+        if key not in teams or record["GAMES_PLAYED"] == 0:
+            continue
+        games_played = record["GAMES_PLAYED"]
+        record_row = {
+            "TEAM_ID": team_id,
+            **{name: str(record[name]) for name in ("WINS", "LOSSES", "GAMES_PLAYED")},
+            "WIN_PCT": f"{record['WINS'] / games_played:.3f}",
+            "LAST_UPDATED": updated_at,
+        }
+        if record["HOME_GAMES"] + record["AWAY_GAMES"] == games_played:
+            for name in (
+                "HOME_WINS",
+                "HOME_LOSSES",
+                "AWAY_WINS",
+                "AWAY_LOSSES",
+            ):
+                record_row[name] = str(record[name])
+        _merge_row(teams, list(_TEAM_CATALOG_COLUMNS), record_row, ("TEAM_ID",))
+
+
 def _map_existing_player(row: Mapping[str, object], headshot: str) -> Row:
-    return {
+    mapped = {
         "PLAYER_ID": _serialize_value(row.get("PLAYER_ID", "")).strip(),
         "PLAYER_NAME": _serialize_value(row.get("PLAYER_NAME", "")).strip(),
         "PLAYER_HEADSHOT_URL": headshot,
     }
+    for column in _PLAYER_CATALOG_COLUMNS:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            mapped[column] = value
+    mapped["PLAYER_HEADSHOT_URL"] = headshot
+
+    height_meters = _height_to_meters(row.get("HEIGHT", ""))
+    weight_kg = _pounds_to_kilograms(row.get("WEIGHT", ""))
+    college = _serialize_value(row.get("SCHOOL", "")).strip()
+    jersey_number = _serialize_value(row.get("JERSEY_NUM", "")).strip()
+    if height_meters and not mapped.get("HEIGHT_METERS"):
+        mapped["HEIGHT_METERS"] = height_meters
+    if weight_kg and not mapped.get("WEIGHT_KG"):
+        mapped["WEIGHT_KG"] = weight_kg
+    if college and not mapped.get("COLLEGE"):
+        mapped["COLLEGE"] = college
+    if jersey_number and not mapped.get("JERSEY_NUMBER"):
+        mapped["JERSEY_NUMBER"] = jersey_number
+    return mapped
 
 
 def _map_existing_team(row: Mapping[str, object]) -> Row:
     team_id = _serialize_value(row.get("TEAM_ID", "")).strip()
-    return {
+    mapped = {
         "TEAM_ID": team_id,
         "TEAM_ABBREVIATION": _serialize_value(row.get("TEAM_ABBREVIATION", "")).strip(),
         "TEAM_NAME": _serialize_value(row.get("TEAM_NAME", "")).strip(),
@@ -640,45 +799,103 @@ def _map_existing_team(row: Mapping[str, object]) -> Row:
             or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
         ),
     }
+    for column in _TEAM_CATALOG_COLUMNS:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            mapped[column] = value
+    arena_name = _serialize_value(row.get("ARENA", "")).strip()
+    primary_color = _rgb_to_hex(row.get("PRIMARY_COLOR_RGB", ""))
+    secondary_color = _rgb_to_hex(row.get("SECONDARY_COLOR_RGB", ""))
+    if arena_name and not mapped.get("ARENA_NAME"):
+        mapped["ARENA_NAME"] = arena_name
+    if primary_color and not mapped.get("TEAM_PRIMARY_COLOR"):
+        mapped["TEAM_PRIMARY_COLOR"] = primary_color
+    if secondary_color and not mapped.get("TEAM_SECONDARY_COLOR"):
+        mapped["TEAM_SECONDARY_COLOR"] = secondary_color
+    return mapped
+
+
+def _height_to_meters(value: object) -> str:
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", _serialize_value(value))
+    if not match:
+        return ""
+    feet, inches = (int(part) for part in match.groups())
+    if inches > 11:
+        return ""
+    return f"{(feet * 12 + inches) * 0.0254:.2f}"
+
+
+def _pounds_to_kilograms(value: object) -> str:
+    text = _serialize_value(value).strip()
+    if not text.isdigit():
+        return ""
+    return f"{int(text) * 0.45359237:.2f}"
+
+
+def _rgb_to_hex(value: object) -> str:
+    text = _serialize_value(value).strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        return text.upper()
+    match = re.fullmatch(
+        r"\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*",
+        text,
+    )
+    if not match:
+        return ""
+    channels = [int(channel) for channel in match.groups()]
+    if any(channel > 255 for channel in channels):
+        return ""
+    return "#{:02X}{:02X}{:02X}".format(*channels)
 
 
 def _map_team_game_row(row: Mapping[str, object]) -> Row:
     matchup = _serialize_value(row.get("MATCHUP", "")).strip()
+    is_home = _stat_value(row, "IS_HOME")
+    if not is_home:
+        if " vs. " in matchup:
+            is_home = "True"
+        elif " @ " in matchup:
+            is_home = "False"
     return {
-        "GAME_ID": _serialize_value(row.get("GAME_ID", "")).strip(),
-        "TEAM_ID": _serialize_value(row.get("TEAM_ID", "")).strip(),
-        "IS_HOME": "True"
-        if " vs. " in matchup
-        else "False"
-        if " @ " in matchup
-        else "",
-        "TEAM_POINTS": _serialize_value(row.get("PTS", "")).strip(),
-        "FIELD_GOALS_MADE": _serialize_value(row.get("FGM", "")).strip(),
-        "FIELD_GOALS_ATTEMPTED": _serialize_value(row.get("FGA", "")).strip(),
-        "FIELD_GOAL_PCT": _serialize_value(row.get("FG_PCT", "")).strip(),
-        "THREE_POINTS_MADE": _serialize_value(row.get("FG3M", "")).strip(),
-        "THREE_POINTS_ATTEMPTED": _serialize_value(row.get("FG3A", "")).strip(),
-        "THREE_POINT_PCT": _serialize_value(row.get("FG3_PCT", "")).strip(),
-        "FREE_THROWS_MADE": _serialize_value(row.get("FTM", "")).strip(),
-        "FREE_THROWS_ATTEMPTED": _serialize_value(row.get("FTA", "")).strip(),
-        "FREE_THROW_PCT": _serialize_value(row.get("FT_PCT", "")).strip(),
-        "OFFENSIVE_REBOUNDS": _serialize_value(row.get("OREB", "")).strip(),
-        "DEFENSIVE_REBOUNDS": _serialize_value(row.get("DREB", "")).strip(),
-        "TOTAL_REBOUNDS": _serialize_value(row.get("REB", "")).strip(),
-        "ASSISTS": _serialize_value(row.get("AST", "")).strip(),
-        "STEALS": _serialize_value(row.get("STL", "")).strip(),
-        "BLOCKS": _serialize_value(row.get("BLK", "")).strip(),
-        "TURNOVERS": _serialize_value(row.get("TOV", "")).strip(),
-        "PERSONAL_FOULS": _serialize_value(row.get("PF", "")).strip(),
+        "GAME_ID": _stat_value(row, "GAME_ID"),
+        "TEAM_ID": _stat_value(row, "TEAM_ID"),
+        "IS_HOME": is_home,
+        "TEAM_POINTS": _stat_value(row, "TEAM_POINTS", "PTS"),
+        "FIELD_GOALS_MADE": _stat_value(row, "FIELD_GOALS_MADE", "FGM"),
+        "FIELD_GOALS_ATTEMPTED": _stat_value(row, "FIELD_GOALS_ATTEMPTED", "FGA"),
+        "FIELD_GOAL_PCT": _stat_value(row, "FIELD_GOAL_PCT", "FG_PCT"),
+        "THREE_POINTS_MADE": _stat_value(row, "THREE_POINTS_MADE", "FG3M"),
+        "THREE_POINTS_ATTEMPTED": _stat_value(row, "THREE_POINTS_ATTEMPTED", "FG3A"),
+        "THREE_POINT_PCT": _stat_value(row, "THREE_POINT_PCT", "FG3_PCT"),
+        "FREE_THROWS_MADE": _stat_value(row, "FREE_THROWS_MADE", "FTM"),
+        "FREE_THROWS_ATTEMPTED": _stat_value(row, "FREE_THROWS_ATTEMPTED", "FTA"),
+        "FREE_THROW_PCT": _stat_value(row, "FREE_THROW_PCT", "FT_PCT"),
+        "OFFENSIVE_REBOUNDS": _stat_value(row, "OFFENSIVE_REBOUNDS", "OREB"),
+        "DEFENSIVE_REBOUNDS": _stat_value(row, "DEFENSIVE_REBOUNDS", "DREB"),
+        "TOTAL_REBOUNDS": _stat_value(row, "TOTAL_REBOUNDS", "REB"),
+        "ASSISTS": _stat_value(row, "ASSISTS", "AST"),
+        "STEALS": _stat_value(row, "STEALS", "STL"),
+        "BLOCKS": _stat_value(row, "BLOCKS", "BLK"),
+        "TURNOVERS": _stat_value(row, "TURNOVERS", "TOV"),
+        "PERSONAL_FOULS": _stat_value(row, "PERSONAL_FOULS", "PF"),
         "PLUS_MINUS": _serialize_value(row.get("PLUS_MINUS", "")).strip(),
+        "POINTS_IN_PAINT": _stat_value(row, "POINTS_IN_PAINT"),
+        "SECOND_CHANCE_POINTS": _stat_value(row, "SECOND_CHANCE_POINTS"),
+        "FAST_BREAK_POINTS": _stat_value(row, "FAST_BREAK_POINTS"),
+        "BENCH_POINTS": _stat_value(row, "BENCH_POINTS"),
+        "BIGGEST_LEAD": _stat_value(row, "BIGGEST_LEAD"),
+        "TEAM_TURNOVERS": _stat_value(row, "TEAM_TURNOVERS"),
     }
 
 
 def _migrate_games(data_directory: Path) -> list[Row]:
-    _, game_rows = _read_existing(
+    game_headers, game_rows = _read_existing(
         data_directory / "games.csv",
         ("GAME_ID",),
     )
+    if {"SEASON", "HOME_TEAM_ID", "AWAY_TEAM_ID"}.issubset(game_headers):
+        return list(game_rows.values())
+
     team_stats_path = data_directory / "team_game_stats.csv"
     scores: dict[str, dict[str, str]] = {}
     if team_stats_path.exists():
@@ -713,7 +930,7 @@ def _migrate_games(data_directory: Path) -> list[Row]:
             {
                 "GAME_ID": game_id,
                 "SEASON": season,
-                "SEASON_TYPE": "Regular Season",
+                "SEASON_TYPE": _season_type_from_id(season_id),
                 "GAME_DATE": _serialize_value(row.get("GAME_DATE", "")).strip(),
                 "GAME_STATUS": "Finalizado" if winner_team_id else "",
                 "HOME_TEAM_ID": "",
@@ -729,30 +946,45 @@ def _migrate_games(data_directory: Path) -> list[Row]:
 
 def _map_player_game_row(row: Mapping[str, object]) -> Row:
     return {
-        "GAME_ID": _serialize_value(row.get("GAME_ID", "")).strip(),
-        "PLAYER_ID": _serialize_value(row.get("PLAYER_ID", "")).strip(),
-        "TEAM_ID": _serialize_value(row.get("TEAM_ID", "")).strip(),
-        "MINUTES": _serialize_value(row.get("MIN", "")).strip(),
-        "POINTS": _serialize_value(row.get("PTS", "")).strip(),
-        "FIELD_GOALS_MADE": _serialize_value(row.get("FGM", "")).strip(),
-        "FIELD_GOALS_ATTEMPTED": _serialize_value(row.get("FGA", "")).strip(),
-        "FIELD_GOAL_PCT": _serialize_value(row.get("FG_PCT", "")).strip(),
-        "THREE_POINTS_MADE": _serialize_value(row.get("FG3M", "")).strip(),
-        "THREE_POINTS_ATTEMPTED": _serialize_value(row.get("FG3A", "")).strip(),
-        "THREE_POINT_PCT": _serialize_value(row.get("FG3_PCT", "")).strip(),
-        "FREE_THROWS_MADE": _serialize_value(row.get("FTM", "")).strip(),
-        "FREE_THROWS_ATTEMPTED": _serialize_value(row.get("FTA", "")).strip(),
-        "FREE_THROW_PCT": _serialize_value(row.get("FT_PCT", "")).strip(),
-        "OFFENSIVE_REBOUNDS": _serialize_value(row.get("OREB", "")).strip(),
-        "DEFENSIVE_REBOUNDS": _serialize_value(row.get("DREB", "")).strip(),
-        "TOTAL_REBOUNDS": _serialize_value(row.get("REB", "")).strip(),
-        "ASSISTS": _serialize_value(row.get("AST", "")).strip(),
-        "STEALS": _serialize_value(row.get("STL", "")).strip(),
-        "BLOCKS": _serialize_value(row.get("BLK", "")).strip(),
-        "TURNOVERS": _serialize_value(row.get("TOV", "")).strip(),
-        "PERSONAL_FOULS": _serialize_value(row.get("PF", "")).strip(),
+        "GAME_ID": _stat_value(row, "GAME_ID"),
+        "PLAYER_ID": _stat_value(row, "PLAYER_ID"),
+        "TEAM_ID": _stat_value(row, "TEAM_ID"),
+        "IS_STARTER": _stat_value(row, "IS_STARTER"),
+        "MINUTES": _stat_value(row, "MINUTES", "MIN"),
+        "POINTS": _stat_value(row, "POINTS", "PTS"),
+        "FIELD_GOALS_MADE": _stat_value(row, "FIELD_GOALS_MADE", "FGM"),
+        "FIELD_GOALS_ATTEMPTED": _stat_value(row, "FIELD_GOALS_ATTEMPTED", "FGA"),
+        "FIELD_GOAL_PCT": _stat_value(row, "FIELD_GOAL_PCT", "FG_PCT"),
+        "THREE_POINTS_MADE": _stat_value(row, "THREE_POINTS_MADE", "FG3M"),
+        "THREE_POINTS_ATTEMPTED": _stat_value(row, "THREE_POINTS_ATTEMPTED", "FG3A"),
+        "THREE_POINT_PCT": _stat_value(row, "THREE_POINT_PCT", "FG3_PCT"),
+        "FREE_THROWS_MADE": _stat_value(row, "FREE_THROWS_MADE", "FTM"),
+        "FREE_THROWS_ATTEMPTED": _stat_value(row, "FREE_THROWS_ATTEMPTED", "FTA"),
+        "FREE_THROW_PCT": _stat_value(row, "FREE_THROW_PCT", "FT_PCT"),
+        "OFFENSIVE_REBOUNDS": _stat_value(row, "OFFENSIVE_REBOUNDS", "OREB"),
+        "DEFENSIVE_REBOUNDS": _stat_value(row, "DEFENSIVE_REBOUNDS", "DREB"),
+        "TOTAL_REBOUNDS": _stat_value(row, "TOTAL_REBOUNDS", "REB"),
+        "ASSISTS": _stat_value(row, "ASSISTS", "AST"),
+        "STEALS": _stat_value(row, "STEALS", "STL"),
+        "BLOCKS": _stat_value(row, "BLOCKS", "BLK"),
+        "TURNOVERS": _stat_value(row, "TURNOVERS", "TOV"),
+        "PERSONAL_FOULS": _stat_value(row, "PERSONAL_FOULS", "PF"),
         "PLUS_MINUS": _serialize_value(row.get("PLUS_MINUS", "")).strip(),
+        "DOUBLE_DOUBLES": _stat_value(row, "DOUBLE_DOUBLES"),
+        "TRIPLE_DOUBLES": _stat_value(row, "TRIPLE_DOUBLES"),
+        "FOULS_DRAWN": _stat_value(row, "FOULS_DRAWN"),
+        "POINTS_OFF_TURNOVERS": _stat_value(row, "POINTS_OFF_TURNOVERS"),
+        "POINTS_IN_PAINT": _stat_value(row, "POINTS_IN_PAINT"),
+        "SECOND_CHANCE_POINTS": _stat_value(row, "SECOND_CHANCE_POINTS"),
     }
+
+
+def _stat_value(row: Mapping[str, object], *columns: str) -> str:
+    for column in columns:
+        value = _serialize_value(row.get(column, "")).strip()
+        if value:
+            return value
+    return ""
 
 
 def _prepare_table(

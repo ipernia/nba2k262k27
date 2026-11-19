@@ -219,10 +219,16 @@ def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None
     assert players[0]["COLLEGE"] == "Example University"
     assert players[0]["POSITION"] == "G"
     assert players[0]["JERSEY_NUMBER"] == "00"
+    assert players[0]["HEIGHT_METERS"] == "1.93"
+    assert players[0]["WEIGHT_KG"] == "90.72"
     assert players[1]["PLAYER_ID"] == "24"
     assert teams[0]["WINS"] == "3"
     assert teams[0]["LOSSES"] == "4"
     assert teams[0]["GAMES_PLAYED"] == "7"
+    assert teams[0]["HOME_WINS"] == ""
+    assert teams[0]["HOME_LOSSES"] == ""
+    assert teams[0]["AWAY_WINS"] == ""
+    assert teams[0]["AWAY_LOSSES"] == ""
     assert teams[1]["TEAM_ID"] == "2"
     assert teams[1]["TEAM_LOGO_URL"] == (
         "https://cdn.nba.com/logos/nba/2/primary/L/logo.svg"
@@ -271,6 +277,62 @@ def test_empty_results_do_not_create_or_change_files(tmp_path: Path) -> None:
     assert {
         path.name: path.read_bytes() for path in data_directory.glob("*.csv")
     } == originals
+
+
+def test_empty_update_preserves_migrated_games(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS, season="2026-27")
+    games_path = data_directory / "games.csv"
+    original = games_path.read_bytes()
+
+    save_game_logs(data_directory, [], [])
+
+    assert games_path.read_bytes() == original
+
+
+def test_regular_standings_are_not_changed_by_playoff_results(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    save_game_logs(
+        data_directory,
+        PLAYER_ROWS,
+        TEAM_ROWS,
+        season="2026-27",
+        season_type="Regular Season",
+    )
+    playoff_teams = [
+        {
+            **TEAM_ROWS[0],
+            "GAME_ID": "002",
+            "SEASON_ID": "42026",
+            "PTS": 105,
+        },
+        {
+            **TEAM_ROWS[1],
+            "GAME_ID": "002",
+            "SEASON_ID": "42026",
+            "PTS": 100,
+        },
+    ]
+
+    save_game_logs(
+        data_directory,
+        [],
+        playoff_teams,
+        season="2026-27",
+        season_type="Playoffs",
+    )
+
+    games = read_csv(data_directory / "games.csv")
+    teams = {row["TEAM_ID"]: row for row in read_csv(data_directory / "teams.csv")}
+    assert {row["GAME_ID"]: row["SEASON_TYPE"] for row in games} == {
+        "001": "Regular Season",
+        "002": "Playoffs",
+    }
+    assert teams["1"]["WINS"] == "1"
+    assert teams["1"]["LOSSES"] == "0"
+    assert teams["1"]["GAMES_PLAYED"] == "1"
 
 
 @pytest.mark.parametrize(
