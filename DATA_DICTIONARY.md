@@ -25,33 +25,32 @@ Una fila por franquicia; clave primaria `TEAM_ID`.
 | TEAM_ID | entero | ID oficial de franquicia | NBA Stats; clave | No | Cada ejecución |
 | TEAM_NAME | texto | Nombre completo | NBA Stats; variable | Sí | Cada ejecución |
 | TEAM_ABBREVIATION | texto | Abreviatura | NBA Stats; variable | Sí | Cada ejecución |
-| TEAM_CITY | texto | Ciudad | No disponible en la extracción actual | Sí | No disponible |
-| TEAM_NICKNAME | texto | Apodo | No disponible en la extracción actual | Sí | No disponible |
+| TEAM_CITY | texto | Ciudad | Catálogo estático oficial de franquicias | No | Catálogo |
 | TEAM_LOGO_URL | URL | Plantilla `cdn.nba.com/logos/nba/{TEAM_ID}/primary/L/logo.svg` | Plantilla NBA; no validada por HTTP | Sí | Cada ejecución |
-| TEAM_PRIMARY_COLOR | texto HEX | Color principal | Sin fuente validada | Sí | No disponible |
-| TEAM_SECONDARY_COLOR | texto HEX | Color secundario | Sin fuente validada | Sí | No disponible |
-| CONFERENCE | texto | Conferencia | CSV de temporada previo | Sí | Legado |
-| DIVISION | texto | División | CSV de temporada previo | Sí | Legado |
+| TEAM_PRIMARY_COLOR | texto HEX | Color principal | Catálogo estático de identidad visual oficial | Sí | Catálogo |
+| TEAM_SECONDARY_COLOR | texto HEX | Color secundario | Catálogo estático de identidad visual oficial | Sí | Catálogo |
+| CONFERENCE | texto | Conferencia | Catálogo oficial de franquicias | No | Catálogo |
+| DIVISION | texto | División | Catálogo oficial de franquicias | No | Catálogo |
 | WINS | entero | Victorias regulares de la temporada indicada al ejecutar | Derivado de resultados de GAMES | Sí | Cada ejecución |
 | LOSSES | entero | Derrotas regulares de la temporada indicada al ejecutar | Derivado de resultados de GAMES | Sí | Cada ejecución |
 | GAMES_PLAYED | entero | Partidos regulares finalizados usados en el cálculo | Derivado | Sí | Cada ejecución |
 | WIN_PCT | decimal | `WINS / GAMES_PLAYED`, redondeado a 3 decimales | Derivado | Sí | Cada ejecución |
-| CONFERENCE_RANK | entero | Posición oficial en conferencia | No disponible | Sí | No disponible |
-| DIVISION_RANK | entero | Posición oficial en división | No disponible | Sí | No disponible |
-| GAMES_BACK | decimal | Diferencia oficial respecto al líder | No disponible | Sí | No disponible |
-| HOME_WINS | entero | Victorias regulares en casa | Derivado solo si se conoce toda la localía de la temporada | Sí | Cada ejecución |
-| HOME_LOSSES | entero | Derrotas regulares en casa | Derivado solo si se conoce toda la localía de la temporada | Sí | Cada ejecución |
-| AWAY_WINS | entero | Victorias regulares fuera | Derivado solo si se conoce toda la localía de la temporada | Sí | Cada ejecución |
-| AWAY_LOSSES | entero | Derrotas regulares fuera | Derivado solo si se conoce toda la localía de la temporada | Sí | Cada ejecución |
-| NBA_CHAMPIONSHIPS | entero | Títulos históricos atribuidos a la franquicia | Sin fuente histórica verificada | Sí | No disponible |
-| ARENA_NAME | texto | Pabellón | Puede migrarse de `ARENA` legado | Sí | Legado |
-| ARENA_CAPACITY | entero | Aforo, personas | No disponible | Sí | No disponible |
+| CONFERENCE_RANK | entero | Posición oficial en conferencia | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
+| DIVISION_RANK | entero | Posición oficial en división | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
+| GAMES_BACK | decimal | Diferencia oficial respecto al líder | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
+| HOME_WINS | entero | Victorias regulares en casa | Derivado de localías confirmadas; neutrales/desconocidos excluidos | Sí | Cada ejecución |
+| HOME_LOSSES | entero | Derrotas regulares en casa | Derivado de localías confirmadas; neutrales/desconocidos excluidos | Sí | Cada ejecución |
+| AWAY_WINS | entero | Victorias regulares fuera | Derivado de localías confirmadas; neutrales/desconocidos excluidos | Sí | Cada ejecución |
+| AWAY_LOSSES | entero | Derrotas regulares fuera | Derivado de localías confirmadas; neutrales/desconocidos excluidos | Sí | Cada ejecución |
+| NBA_CHAMPIONSHIPS | entero | Títulos históricos de la franquicia | Historial oficial NBA/equipo; incluye la franquicia, no solo la ciudad | No | Catálogo |
+| ARENA_NAME | texto | Pabellón actual | Sitio oficial del equipo o pabellón | No | Catálogo |
+| ARENA_CAPACITY | entero | Aforo documentado, personas | Sitio oficial del equipo o pabellón | No | Catálogo |
 | LAST_UPDATED | fecha-hora ISO 8601 | Momento UTC de la última escritura ETL del registro | Reloj local UTC; no es fecha de la fuente | Sí | Cada ejecución |
 
-Los acumulados son de temporada regular y excluyen playoffs. Los resultados
-por localía de `team_seasons.csv` no se trasladan si la cobertura de localía no
-puede verificarse; permanecen en el archivo legacy. El ranking y `GAMES_BACK`
-no se estiman.
+Los acumulados son de temporada regular y excluyen playoffs. Los partidos
+neutrales y los partidos sin localía confirmada cuentan para el balance general,
+pero no para casa o fuera. Los campos estáticos no se sustituyen por vacíos
+cuando falla una extracción.
 
 ## GAMES (`games.csv`)
 

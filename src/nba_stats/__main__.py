@@ -8,7 +8,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from nba_stats.client import NBAStatsError, fetch_league_game_logs
+from nba_stats.client import (
+    NBAStatsError,
+    fetch_league_game_logs,
+    fetch_league_standings,
+)
 from nba_stats.storage import CSVStorageError, save_game_logs
 
 
@@ -79,12 +83,23 @@ def main(argv: list[str] | None = None) -> int:
             retry_delay_seconds=args.retry_delay,
             timeout_seconds=args.timeout,
         )
+        standings = (
+            fetch_league_standings(
+                args.season,
+                max_attempts=args.attempts,
+                retry_delay_seconds=args.retry_delay,
+                timeout_seconds=args.timeout,
+            )
+            if args.season_type == "Regular Season"
+            else []
+        )
         counts = save_game_logs(
             args.data_dir,
             game_logs["P"],
             game_logs["T"],
             season=args.season,
             season_type=args.season_type,
+            standings_rows=standings,
         )
     except (NBAStatsError, CSVStorageError, ValueError, OSError) as error:
         logging.exception("No se pudieron actualizar las estadísticas.")

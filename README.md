@@ -15,9 +15,10 @@ Las URLs de imagen se construyen directamente con los IDs de NBA.com:
 - Jugadores: `https://cdn.nba.com/headshots/nba/latest/1040x760/{PLAYER_ID}.png`
 - Equipos: `https://cdn.nba.com/logos/nba/{TEAM_ID}/primary/L/logo.svg`
 
-No se descargan imágenes ni se consultan camisetas, colores, premios o
-metadatos de licencia. Los campos que no están disponibles en las fuentes
-actuales permanecen vacíos; sus límites se describen en
+No se descargan imágenes ni se consultan camisetas o metadatos de licencia.
+Los datos estáticos de franquicias (identidad, colores, historial y pabellón)
+se mantienen en un catálogo local y no se consultan diariamente. Los campos
+que no están disponibles en las fuentes actuales permanecen vacíos; sus límites se describen en
 [`docs/data-sources.md`](docs/data-sources.md).
 
 Si un jugador ya tiene una fila en `players.csv` pero no tiene
