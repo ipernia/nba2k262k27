@@ -16,13 +16,12 @@ Las URLs de imagen se construyen directamente con los IDs de NBA.com:
 - Equipos: `https://cdn.nba.com/logos/nba/{TEAM_ID}/primary/L/logo.svg`
 
 No se descargan imágenes ni se consultan camisetas, colores, premios o
-metadatos de licencia. Los catálogos de jugadores y equipos se forman con las
-entidades que aparecen en los registros de partidos de la temporada; no
-incluyen jugadores que todavía no hayan participado en un partido, salvo que
-se incorporen desde un CSV de temporadas existente.
+metadatos de licencia. Los campos que no están disponibles en las fuentes
+actuales permanecen vacíos; sus límites se describen en
+[`docs/data-sources.md`](docs/data-sources.md).
 
 Si un jugador ya tiene una fila en `players.csv` pero no tiene
-`PLAYER_FACE_URL`, se usa la imagen de respaldo
+`PLAYER_HEADSHOT_URL`, se usa la imagen de respaldo
 [player_silhouette.png](assets/player_silhouette.png). Su valor en el CSV es
 `assets/player_silhouette.png`, una ruta relativa a la carpeta del proyecto.
 
@@ -58,16 +57,24 @@ actualizar la actual:
 python -m nba_stats
 ```
 
-Para descargar o actualizar 2026-27 explícitamente:
+Para descargar o actualizar la temporada regular 2026-27:
 
 ```powershell
 python -m nba_stats --season 2026-27
 ```
 
+Para playoffs:
+
+```powershell
+python -m nba_stats --season 2026-27 --season-type Playoffs
+```
+
 Los registros se acumulan por sus claves de partido. Volver a ejecutar el
 comando actualiza las filas existentes sin duplicarlas. Los nuevos datos no
-borran los valores previos cuando llegan vacíos. La ejecución crea o actualiza
-los cinco CSV de partidos y catálogos descritos arriba.
+borran los valores previos cuando llegan vacíos. Las consultas reintentan
+timeouts, HTTP 429 y HTTP 5xx con retroceso exponencial y respetan `Retry-After`;
+HTTP 403/404 no se reintentan. La ejecución crea o actualiza los cinco CSV
+principales descritos arriba.
 
 Si ya existen `player_seasons.csv` o `team_seasons.csv`, también se normalizan
 al guardar registros: los datos propios de cada jugador o equipo se trasladan
@@ -87,18 +94,20 @@ resultado, estado y metadatos opcionales. Cuando no se conoce la localía o una
 fecha/hora, el campo correspondiente permanece vacío; no se infiere ni se
 convierte un desconocido en cero.
 
-Los CSV de temporadas, cuando existen, contienen:
+Los CSV de temporadas, si existen, se mantienen como fuentes temporales de
+migración y no forman parte del modelo de Power BI:
 
 - `player_seasons.csv`: `PLAYER_ID`, `TEAM_ID`, `SEASON_ID`, `JERSEY_NUM`,
   `POSITION`, `EXP`.
 - `team_seasons.csv`: `TEAM_ID`, `SEASON_ID`, `CONFERENCE`, `DIVISION`,
   `WINS`, `LOSSES`, `WIN_PCT`, `HOME_RECORD`, `ROAD_RECORD`, `L10`, `STREAK`.
 
-`games.csv` contiene el esquema relacional normalizado descrito en
-`DATA_DICTIONARY.md`. Los datos antiguos pueden conservarse temporalmente en
-`data/old/`; no se eliminan ni se mezclan con estadísticas de la temporada
-actual. `GAME_ID` permanece como clave para relacionar las tablas de partidos
-y estadísticas.
+Las columnas definitivas, sus tipos lógicos, unidades, procedencia y
+limitaciones están en [`DATA_DICTIONARY.md`](DATA_DICTIONARY.md). El diagrama y
+las recomendaciones de relaciones y medidas DAX están en
+[`docs/powerbi-model.md`](docs/powerbi-model.md). Los datos archivados se
+conservan en `data/old/` y no se mezclan en estadísticas de la temporada
+regular 2026-27.
 
 Opciones disponibles:
 

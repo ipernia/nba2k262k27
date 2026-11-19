@@ -6,6 +6,11 @@
   de equipo/jugador para el modelo relacional 2026-27.
 - `games.csv` pasó de equipo 1/equipo 2 a local/visitante, resultado y estado.
 - Se incorporó soporte opcional a playoffs en la descarga.
+- Se añadieron reintentos selectivos, backoff exponencial y respeto de
+  `Retry-After` para errores temporales.
+- Se recuperan campos de catálogos legados y se convierten altura a metros y
+  peso a kilogramos; los acumulados regulares se derivan sin mezclar playoffs.
+- Se documentaron las fuentes, límites y relaciones de Power BI.
 - Se migraron los campos disponibles de los CSV antiguos sin eliminar
   `data/old/` ni las tablas legacy de temporada.
 - Los campos no disponibles de forma oficial permanecen vacíos.
