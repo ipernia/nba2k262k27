@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from nba_stats.storage import CSVStorageError, save_game_logs
+from nba_stats.team_catalog import TEAM_STATIC_DATA
 
 PLAYER_ROWS = [
     {
@@ -98,6 +99,43 @@ def test_creates_csvs_with_image_urls_games_and_game_stats(
     assert "TEAM_NAME" not in team_stats
     for stats in (player_stats, team_stats):
         assert not {"SEASON_ID", "GAME_DATE", "MATCHUP", "VIDEO_AVAILABLE"} & set(stats)
+    assert "TEAM_NICKNAME" not in teams[0]
+
+
+def test_static_catalog_contains_all_nba_franchises() -> None:
+    assert len(TEAM_STATIC_DATA) == 30
+    assert len(set(TEAM_STATIC_DATA)) == 30
+    for fields in TEAM_STATIC_DATA.values():
+        assert fields["TEAM_CITY"]
+        assert fields["CONFERENCE"] in {"East", "West"}
+        assert fields["DIVISION"]
+        assert fields["TEAM_PRIMARY_COLOR"].startswith("#")
+        assert fields["TEAM_SECONDARY_COLOR"].startswith("#")
+        assert len(fields["TEAM_PRIMARY_COLOR"]) == 7
+        assert len(fields["TEAM_SECONDARY_COLOR"]) == 7
+        assert fields["NBA_CHAMPIONSHIPS"].isdigit()
+        assert fields["ARENA_NAME"]
+        assert fields["ARENA_CAPACITY"].isdigit()
+
+
+def test_standings_are_written_only_for_regular_season(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    standings = [
+        {"TEAM_ID": 1, "CONF_RANK": 3, "DIV_RANK": 2, "GB": 1.5},
+    ]
+
+    save_game_logs(
+        data_directory,
+        PLAYER_ROWS,
+        TEAM_ROWS,
+        season="2026-27",
+        standings_rows=standings,
+    )
+
+    team = read_csv(data_directory / "teams.csv")[0]
+    assert team["CONFERENCE_RANK"] == "3"
+    assert team["DIVISION_RANK"] == "2"
+    assert team["GAMES_BACK"] == "1.5"
 
 
 def test_accumulates_games_and_updates_catalog_rows(tmp_path: Path) -> None:
@@ -525,8 +563,16 @@ def test_uses_deterministic_order_when_locality_and_neutrality_are_unknown(
 def test_processes_game_0022600189_with_ambiguous_matchup(tmp_path: Path) -> None:
     data_directory = tmp_path / "data"
     ambiguous_rows = [
-        TEAM_ROWS[0] | {"GAME_ID": "0022600189"},
-        TEAM_ROWS[1] | {"GAME_ID": "0022600189", "MATCHUP": "OPP vs. TST"},
+        {
+            key: value
+            for key, value in (TEAM_ROWS[0] | {"GAME_ID": "0022600189"}).items()
+            if key != "MATCHUP"
+        },
+        {
+            key: value
+            for key, value in (TEAM_ROWS[1] | {"GAME_ID": "0022600189"}).items()
+            if key != "MATCHUP"
+        },
     ]
 
     counts = save_game_logs(data_directory, PLAYER_ROWS, ambiguous_rows)
@@ -537,3 +583,36 @@ def test_processes_game_0022600189_with_ambiguous_matchup(tmp_path: Path) -> Non
     assert game["GAME_ID"] == "0022600189"
     assert game["IS_NEUTRAL_SITE"] == ""
     assert len(team_stats) == 2
+
+
+def test_keeps_known_locality_when_another_game_is_ambiguous(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    ambiguous_rows = [
+        {
+            key: value
+            for key, value in (TEAM_ROWS[0] | {"GAME_ID": "0022600189"}).items()
+            if key != "MATCHUP"
+        },
+        {
+            key: value
+            for key, value in (TEAM_ROWS[1] | {"GAME_ID": "0022600189"}).items()
+            if key != "MATCHUP"
+        },
+    ]
+
+    save_game_logs(
+        data_directory,
+        PLAYER_ROWS,
+        TEAM_ROWS + ambiguous_rows,
+        season="2026-27",
+    )
+
+    teams = {row["TEAM_ID"]: row for row in read_csv(data_directory / "teams.csv")}
+    assert teams["1"]["HOME_WINS"] == "1"
+    assert teams["1"]["HOME_LOSSES"] == "0"
+    assert teams["1"]["AWAY_WINS"] == "0"
+    assert teams["1"]["AWAY_LOSSES"] == "0"
+    assert teams["2"]["HOME_WINS"] == "0"
+    assert teams["2"]["HOME_LOSSES"] == "0"
+    assert teams["2"]["AWAY_WINS"] == "0"
+    assert teams["2"]["AWAY_LOSSES"] == "1"

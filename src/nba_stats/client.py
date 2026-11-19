@@ -49,6 +49,12 @@ _REQUIRED_COLUMNS = {
     ),
 }
 _SEASON_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+_STANDINGS_ALIASES = (
+    ("TEAM_ID", "TeamID"),
+    ("CONFERENCE_RANK", "ConferenceRank", "CONF_RANK", "PlayoffRank"),
+    ("DIVISION_RANK", "DIV_RANK", "DivisionRank"),
+    ("GAMES_BACK", "GB", "ConferenceGamesBack"),
+)
 
 
 def fetch_league_game_logs(
@@ -97,6 +103,96 @@ def fetch_league_game_logs(
             timeout_seconds=timeout_seconds,
         )
     return results
+
+
+def fetch_league_standings(
+    season: str,
+    *,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 2,
+    timeout_seconds: int = 30,
+    endpoint_factory: EndpointFactory | None = None,
+) -> list[dict[str, object]]:
+    """Descarga la clasificación de temporada regular para una temporada."""
+    _validate_request_options(
+        season, max_attempts, retry_delay_seconds, timeout_seconds
+    )
+    if endpoint_factory is None:
+        try:
+            from nba_api.stats.endpoints import LeagueStandings
+        except ImportError as error:
+            raise NBAStatsError(
+                "Falta nba_api. Instala las dependencias del proyecto con "
+                "'python -m pip install -e \".[dev]\"'."
+            ) from error
+        endpoint_factory = LeagueStandings
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            endpoint = endpoint_factory(
+                league_id="00",
+                season=season,
+                season_type="Regular Season",
+                timeout=timeout_seconds,
+            )
+            frames = endpoint.get_data_frames()
+            if not frames:
+                raise NBAStatsError("NBA.com devolvió una respuesta sin tablas.")
+            rows = []
+            for frame in frames:
+                if not isinstance(frame, GameLogFrame):
+                    continue
+                candidate_rows = frame.to_dict("records")
+                if candidate_rows and _has_standings_columns(candidate_rows):
+                    rows = candidate_rows
+                    break
+        except NBAStatsError:
+            raise
+        except Exception as error:
+            status_code = _http_status(error)
+            if not _is_retryable(error, status_code):
+                raise NBAStatsError(
+                    f"Falló la consulta de clasificación"
+                    f"{f' (HTTP {status_code})' if status_code else ''}; "
+                    "el error no admite reintento."
+                ) from error
+            if attempt == max_attempts:
+                raise NBAStatsError(
+                    "No se pudo descargar la clasificación tras "
+                    f"{max_attempts} intentos."
+                ) from error
+            time.sleep(_retry_delay(error, retry_delay_seconds, attempt))
+            continue
+
+        if not isinstance(rows, list) or any(
+            not isinstance(row, Mapping) for row in rows
+        ):
+            raise NBAStatsError("NBA.com devolvió registros con un formato inválido.")
+        if not rows or not _has_standings_columns(rows):
+            raise NBAStatsError("La clasificación no contiene las columnas requeridas.")
+        return [
+            {
+                canonical: _first_value(row, aliases)
+                for canonical, *aliases in _STANDINGS_ALIASES
+            }
+            for row in rows
+        ]
+
+    raise NBAStatsError("La consulta terminó sin un resultado válido.")
+
+
+def _has_standings_columns(rows: Sequence[Mapping[str, object]]) -> bool:
+    return all(
+        any(alias in row for row in rows for alias in aliases)
+        for aliases in _STANDINGS_ALIASES
+    )
+
+
+def _first_value(row: Mapping[str, object], aliases: Sequence[str]) -> object:
+    for alias in aliases:
+        if alias in row:
+            return row[alias]
+    return ""
 
 
 def _validate_request_options(

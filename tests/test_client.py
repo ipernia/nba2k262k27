@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from nba_stats.__main__ import current_season, main
-from nba_stats.client import NBAStatsError, fetch_league_game_logs
+from nba_stats.client import (
+    NBAStatsError,
+    fetch_league_game_logs,
+    fetch_league_standings,
+)
 
 
 class FakeFrame:
@@ -82,6 +86,44 @@ def test_fetches_player_and_team_logs_with_expected_parameters() -> None:
     assert all(call["season"] == "2026-27" for call in calls)
     assert all(call["season_type_all_star"] == "Regular Season" for call in calls)
     assert all(call["timeout"] == 30 for call in calls)
+
+
+def test_fetches_and_normalizes_regular_season_standings() -> None:
+    calls: list[dict[str, object]] = []
+
+    def endpoint_factory(**kwargs: object) -> FakeEndpoint:
+        calls.append(kwargs)
+        return FakeEndpoint(
+            [
+                {
+                    "TeamID": 1,
+                    "PlayoffRank": 3,
+                    "DivisionRank": 2,
+                    "ConferenceGamesBack": 1.5,
+                }
+            ]
+        )
+
+    result = fetch_league_standings(
+        "2026-27", endpoint_factory=endpoint_factory, max_attempts=1
+    )
+
+    assert result == [
+        {
+            "TEAM_ID": 1,
+            "CONFERENCE_RANK": 3,
+            "DIVISION_RANK": 2,
+            "GAMES_BACK": 1.5,
+        }
+    ]
+    assert calls == [
+        {
+            "league_id": "00",
+            "season": "2026-27",
+            "season_type": "Regular Season",
+            "timeout": 30,
+        }
+    ]
 
 
 def test_retries_a_failed_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,6 +325,9 @@ def test_main_updates_only_core_csvs_from_game_logs(
 
     monkeypatch.setattr(
         "nba_stats.__main__.fetch_league_game_logs", fake_fetch_game_logs
+    )
+    monkeypatch.setattr(
+        "nba_stats.__main__.fetch_league_standings", lambda *args, **kwargs: []
     )
     data_directory = tmp_path / "data"
 

@@ -13,6 +13,8 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import TypeAlias
 
+from nba_stats.team_catalog import static_team_data
+
 Row: TypeAlias = dict[str, object]
 CSVRow: TypeAlias = dict[str, str]
 RowKey: TypeAlias = tuple[str, ...]
@@ -92,7 +94,6 @@ _TEAM_CATALOG_COLUMNS = (
     "TEAM_NAME",
     "TEAM_ABBREVIATION",
     "TEAM_CITY",
-    "TEAM_NICKNAME",
     "TEAM_LOGO_URL",
     "TEAM_PRIMARY_COLOR",
     "TEAM_SECONDARY_COLOR",
@@ -211,6 +212,7 @@ def save_game_logs(
     team_rows: Sequence[Mapping[str, object]],
     season: str | None = None,
     season_type: str = "Regular Season",
+    standings_rows: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, int]:
     """Acumula catálogos y estadísticas, normalizando temporadas existentes."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
@@ -311,6 +313,7 @@ def save_game_logs(
                 "TEAM_ID": team_id,
                 "TEAM_ABBREVIATION": row["TEAM_ABBREVIATION"],
                 "TEAM_NAME": row["TEAM_NAME"],
+                **static_team_data(team_id),
                 "TEAM_LOGO_URL": (
                     f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
                 ),
@@ -318,6 +321,23 @@ def save_game_logs(
             },
             ("TEAM_ID",),
         )
+    if standings_rows and season_type == "Regular Season":
+        for row in standings_rows:
+            team_id = _serialize_value(row.get("TEAM_ID", "")).strip()
+            if not team_id or (team_id,) not in team_catalog:
+                continue
+            standings = {
+                "TEAM_ID": team_id,
+                "CONFERENCE_RANK": _stat_value(row, "CONFERENCE_RANK", "CONF_RANK"),
+                "DIVISION_RANK": _stat_value(row, "DIVISION_RANK", "DIV_RANK"),
+                "GAMES_BACK": _stat_value(row, "GAMES_BACK", "GB"),
+            }
+            _merge_row(
+                team_catalog,
+                list(_TEAM_CATALOG_COLUMNS),
+                standings,
+                ("TEAM_ID",),
+            )
 
     player_stats: list[Row] = []
     existing_player_stats_path = data_directory / "player_game_stats.csv"
@@ -846,7 +866,6 @@ def _update_team_records(
             record["AWAY_GAMES"] += 1
             record["AWAY_WINS" if is_win else "AWAY_LOSSES"] += 1
 
-    teams_with_unknown_location: set[str] = set()
     split_columns = (
         "HOME_WINS",
         "HOME_LOSSES",
@@ -864,22 +883,16 @@ def _update_team_records(
             "WIN_PCT": f"{record['WINS'] / games_played:.3f}",
             "LAST_UPDATED": updated_at,
         }
-        if record["HOME_GAMES"] + record["AWAY_GAMES"] == games_played:
+        if record["HOME_GAMES"] + record["AWAY_GAMES"] > 0:
             for name in split_columns:
                 record_row[name] = str(record[name])
-            replace_empty_columns = frozenset()
-        else:
-            teams_with_unknown_location.add(team_id)
-            record_row.update({name: "" for name in split_columns})
-            replace_empty_columns = frozenset(split_columns)
         _merge_row(
             teams,
             list(_TEAM_CATALOG_COLUMNS),
             record_row,
             ("TEAM_ID",),
-            replace_empty_columns=replace_empty_columns,
         )
-    return teams_with_unknown_location
+    return set()
 
 
 def _map_existing_player(row: Mapping[str, object], headshot: str) -> CSVRow:
@@ -915,6 +928,7 @@ def _map_existing_team(row: Mapping[str, object]) -> CSVRow:
         "TEAM_ID": team_id,
         "TEAM_ABBREVIATION": _serialize_value(row.get("TEAM_ABBREVIATION", "")).strip(),
         "TEAM_NAME": _serialize_value(row.get("TEAM_NAME", "")).strip(),
+        **static_team_data(team_id),
         "TEAM_LOGO_URL": (
             _serialize_value(row.get("TEAM_LOGO_URL", "")).strip()
             or f"https://cdn.nba.com/logos/nba/{team_id}/primary/L/logo.svg"
