@@ -196,6 +196,7 @@ def test_main_updates_only_core_csvs_from_game_logs(
     ) -> dict[str, list[dict[str, object]]]:
         calls.append(season)
         assert kwargs == {
+            "season_type": "Regular Season",
             "max_attempts": 3,
             "retry_delay_seconds": 2,
             "timeout_seconds": 30,
@@ -225,7 +226,7 @@ def test_main_updates_only_core_csvs_from_game_logs(
         encoding="utf-8-sig", newline=""
     ) as csv_file:
         team = next(csv.DictReader(csv_file))
-    assert player["PLAYER_FACE_URL"] == (
+    assert player["PLAYER_HEADSHOT_URL"] == (
         "https://cdn.nba.com/headshots/nba/latest/1040x760/23.png"
     )
     assert team["TEAM_LOGO_URL"] == (

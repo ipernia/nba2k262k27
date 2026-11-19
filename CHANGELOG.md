@@ -2,6 +2,14 @@
 
 ## Sin publicar
 
+- Se normalizaron los esquemas principales de equipos, partidos y estadísticas
+  de equipo/jugador para el modelo relacional 2026-27.
+- `games.csv` pasó de equipo 1/equipo 2 a local/visitante, resultado y estado.
+- Se incorporó soporte opcional a playoffs en la descarga.
+- Se migraron los campos disponibles de los CSV antiguos sin eliminar
+  `data/old/` ni las tablas legacy de temporada.
+- Los campos no disponibles de forma oficial permanecen vacíos.
+
 - Se simplificó la salida a los CSV de catálogos y estadísticas de partidos.
 - Se añadió `games.csv` con los datos del partido y los IDs de los equipos
   participantes, retirando los datos repetidos de los CSV de estadísticas.

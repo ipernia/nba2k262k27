@@ -47,6 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         default=2,
         help="Espera entre reintentos, en segundos.",
     )
+    parser.add_argument(
+        "--season-type",
+        choices=("Regular Season", "Playoffs"),
+        default="Regular Season",
+        help="Tipo de competición a descargar.",
+    )
     args = parser.parse_args(argv)
 
     log_directory = Path("logs")
@@ -68,11 +74,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         game_logs = fetch_league_game_logs(
             args.season,
+            season_type=args.season_type,
             max_attempts=args.attempts,
             retry_delay_seconds=args.retry_delay,
             timeout_seconds=args.timeout,
         )
-        counts = save_game_logs(args.data_dir, game_logs["P"], game_logs["T"])
+        counts = save_game_logs(
+            args.data_dir,
+            game_logs["P"],
+            game_logs["T"],
+            season=args.season,
+            season_type=args.season_type,
+        )
     except (NBAStatsError, CSVStorageError, ValueError, OSError) as error:
         logging.exception("No se pudieron actualizar las estadísticas.")
         print(f"Error en estadísticas: {error}", file=sys.stderr)

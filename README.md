@@ -5,7 +5,7 @@ en cinco CSV UTF-8 con BOM, listos para Excel o Power BI:
 
 - `players.csv`: catálogo de jugadores.
 - `teams.csv`: catálogo de equipos.
-- `games.csv`: fecha, temporada y los dos IDs de equipo por partido.
+- `games.csv`: identificador, temporada, localía, resultado y metadatos del partido.
 - `player_game_stats.csv`: estadísticas por partido y jugador, incluido
   `TEAM_ID` para conservar el equipo por el que jugó.
 - `team_game_stats.csv`: estadísticas por partido y equipo.
@@ -75,12 +75,17 @@ a `players.csv` o `teams.csv`, respectivamente, y en los CSV de temporadas se
 conservan únicamente los campos estacionales. El programa actual no descarga
 ni crea esos dos CSV.
 
-Los catálogos contienen:
+Los catálogos principales usan los esquemas documentados en
+[`DATA_DICTIONARY.md`](DATA_DICTIONARY.md):
 
-- `players.csv`: `PLAYER_ID`, `PLAYER_NAME`, `PLAYER_FACE_URL`, `HEIGHT`,
-  `WEIGHT`, `SCHOOL`, `INDIVIDUAL_ACHIEVEMENTS`.
-- `teams.csv`: `TEAM_ID`, `TEAM_ABBREVIATION`, `TEAM_NAME`, `TEAM_LOGO_URL`,
-  `PRIMARY_COLOR_RGB`, `SECONDARY_COLOR_RGB`, `COLOR_SOURCE_URL`.
+- `players.csv`: entidad normalizada de jugador.
+- `teams.csv`: entidad normalizada de equipo y datos variables de temporada
+  regular disponibles.
+
+`games.csv` identifica temporada y tipo de temporada, equipos local y visitante,
+resultado, estado y metadatos opcionales. Cuando no se conoce la localía o una
+fecha/hora, el campo correspondiente permanece vacío; no se infiere ni se
+convierte un desconocido en cero.
 
 Los CSV de temporadas, cuando existen, contienen:
 
@@ -89,18 +94,18 @@ Los CSV de temporadas, cuando existen, contienen:
 - `team_seasons.csv`: `TEAM_ID`, `SEASON_ID`, `CONFERENCE`, `DIVISION`,
   `WINS`, `LOSSES`, `WIN_PCT`, `HOME_RECORD`, `ROAD_RECORD`, `L10`, `STREAK`.
 
-`games.csv` contiene `GAME_ID`, `SEASON_ID`, `GAME_DATE`, `TEAM_ID_1`,
-`TEAM_ID_2` y `VIDEO_AVAILABLE`. Los IDs están ordenados numéricamente; no
-representan localía. Las columnas de esos datos (incluido `MATCHUP`) se retiran
-de los dos CSV de estadísticas; `GAME_ID` permanece como clave para
-relacionarlos con `games.csv`. Las filas antiguas se migran al actualizar los
-datos.
+`games.csv` contiene el esquema relacional normalizado descrito en
+`DATA_DICTIONARY.md`. Los datos antiguos pueden conservarse temporalmente en
+`data/old/`; no se eliminan ni se mezclan con estadísticas de la temporada
+actual. `GAME_ID` permanece como clave para relacionar las tablas de partidos
+y estadísticas.
 
 Opciones disponibles:
 
 ```powershell
 python -m nba_stats --help
 python -m nba_stats --season 2026-27 --data-dir data --attempts 3 --timeout 30 --retry-delay 2
+python -m nba_stats --season 2026-27 --season-type Playoffs
 ```
 
 Los errores y las ejecuciones correctas se registran en

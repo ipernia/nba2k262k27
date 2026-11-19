@@ -53,6 +53,7 @@ _SEASON_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 def fetch_league_game_logs(
     season: str,
     *,
+    season_type: str = "Regular Season",
     max_attempts: int = 3,
     retry_delay_seconds: float = 2,
     timeout_seconds: int = 30,
@@ -71,6 +72,8 @@ def fetch_league_game_logs(
     _validate_request_options(
         season, max_attempts, retry_delay_seconds, timeout_seconds
     )
+    if season_type not in ("Regular Season", "Playoffs"):
+        raise ValueError("season_type debe ser Regular Season o Playoffs.")
     if endpoint_factory is None:
         try:
             from nba_api.stats.endpoints import LeagueGameLog
@@ -85,6 +88,7 @@ def fetch_league_game_logs(
     for player_or_team in ("P", "T"):
         results[player_or_team] = _fetch_one_game_log(
             season=season,
+            season_type=season_type,
             player_or_team=player_or_team,
             endpoint_factory=endpoint_factory,
             max_attempts=max_attempts,
@@ -130,6 +134,7 @@ def _validate_request_options(
 def _fetch_one_game_log(
     *,
     season: str,
+    season_type: str,
     player_or_team: str,
     endpoint_factory: EndpointFactory,
     max_attempts: int,
@@ -141,7 +146,7 @@ def _fetch_one_game_log(
             endpoint = endpoint_factory(
                 player_or_team_abbreviation=player_or_team,
                 season=season,
-                season_type_all_star="Regular Season",
+                season_type_all_star=season_type,
                 timeout=timeout_seconds,
             )
             frames = endpoint.get_data_frames()
