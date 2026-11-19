@@ -19,7 +19,7 @@ no se reintentan. No se conoce ni se promete un límite oficial de peticiones.
 |---|---|
 | IDs, nombres y abreviaturas de equipo; estadísticas de equipo por partido | `LeagueGameLog` de NBA Stats |
 | IDs, nombres y estadísticas de jugadores por partido | `LeagueGameLog` de NBA Stats |
-| Local/visitante | Token `vs.` o `@` de `MATCHUP`; el CSV histórico que solo ordenaba IDs no permite recuperar localía |
+| Local/visitante | Solo se confirma con los dos `MATCHUP` recíprocos (`vs.` y `@`); si no, los IDs de `GAMES` se ordenan de forma determinista y `TEAM_GAME_STATS.IS_HOME` queda vacío |
 | Marcador y ganador | `PTS` de ambos equipos; ganador es el ID del mayor marcador |
 | `SEASON` / `SEASON_TYPE` | Parámetros de la ejecución y `SEASON_ID` legado |
 | Acumulados regulares en TEAMS | Agregación de partidos finalizados para la temporada consultada; los playoffs se excluyen |
@@ -31,9 +31,19 @@ no se reintentan. No se conoce ni se promete un límite oficial de peticiones.
 El endpoint utilizado no proporciona en este flujo nacionalidad, nacimiento,
 Draft, premios, datos de carrera, arena/capacidad, color, clasificación oficial,
 horas locales/UTC, asistencia, overtime, neutralidad, ronda de playoffs ni
-highlights verificados. Esos campos quedan vacíos. `AGE` debe calcularse en
-Power BI desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
+highlights verificados. `IS_NEUTRAL_SITE` queda vacío si no llega una señal
+explícita; no se deduce de `MATCHUP`. Cuando la entrada sí incluye esa señal,
+se respeta sin añadir columnas al modelo. `AGE` debe calcularse en Power BI
+desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
 peticiones a servicios adicionales para fotografías, banderas o vídeos.
+
+La falta o ambigüedad de `MATCHUP` no descarta partidos ni estadísticas. Si la
+fuente confirma cancha neutral pero no localía oficial, se conserva el orden
+de equipos recibido en `HOME_TEAM_ID` y `AWAY_TEAM_ID`; sin localía confirmada
+ni señal neutral se usa el orden numérico de `TEAM_ID`. En ambos casos
+`IS_HOME` queda vacío para no presentar esa asignación como localía real.
+Los partidos neutrales no participan en los acumulados de rendimiento en casa
+o fuera.
 
 No se depende de `CommonTeamRoster` para imágenes. Una futura ampliación de
 fuentes debe documentar condiciones de uso y probarse en una tarea separada;

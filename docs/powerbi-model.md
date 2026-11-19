@@ -20,9 +20,11 @@ Relaciona sus claves respectivamente con `GAMES[HOME_TEAM_ID]` y
 como la dimensión relacionada con `TEAM_GAME_STATS`. No conectes esa dimensión
 directamente a ambos roles de `GAMES` si ello activa rutas de filtro alternativas.
 
-La migración de archivos antiguos puede dejar IDs de local/visitante vacíos
-cuando el orden previo de IDs no codificaba la localía. Esas filas no aparecerán
-en segmentadores por rol hasta que la fuente aporte localía verificable.
+`GAMES[HOME_TEAM_ID]` y `GAMES[AWAY_TEAM_ID]` conservan la localía oficial si
+se verifica. En caso contrario pueden contener una asignación técnica
+determinista; no uses esos IDs para analizar localía cuando `TEAM_GAME_STATS`
+no tenga `IS_HOME` confirmado. Los partidos neutrales tampoco deben contarse
+como rendimiento en casa/fuera: su `IS_HOME` se deja vacío.
 
 ## Medidas de ejemplo
 
@@ -39,16 +41,24 @@ Partidos finalizados :=
 
 Victorias local :=
     CALCULATE(
-        COUNTROWS(GAMES),
+        COUNTROWS(TEAM_GAME_STATS),
         GAMES[GAME_STATUS] = "Finalizado",
-        GAMES[WINNER_TEAM_ID] = GAMES[HOME_TEAM_ID]
+        FILTER(
+            TEAM_GAME_STATS,
+            TEAM_GAME_STATS[IS_HOME] = TRUE()
+                && TEAM_GAME_STATS[TEAM_ID] = RELATED(GAMES[WINNER_TEAM_ID])
+        )
     )
 
 Victorias visitante :=
     CALCULATE(
-        COUNTROWS(GAMES),
+        COUNTROWS(TEAM_GAME_STATS),
         GAMES[GAME_STATUS] = "Finalizado",
-        GAMES[WINNER_TEAM_ID] = GAMES[AWAY_TEAM_ID]
+        FILTER(
+            TEAM_GAME_STATS,
+            TEAM_GAME_STATS[IS_HOME] = FALSE()
+                && TEAM_GAME_STATS[TEAM_ID] = RELATED(GAMES[WINNER_TEAM_ID])
+        )
     )
 
 Edad :=
