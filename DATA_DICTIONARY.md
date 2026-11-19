@@ -94,11 +94,9 @@ Una fila por jugador; clave primaria `PLAYER_ID`.
 |---|---|---|---|---|
 | PLAYER_ID | entero | ID oficial del jugador | NBA Stats; clave | No |
 | PLAYER_NAME | texto | Nombre completo | NBA Stats / legado | Sí |
-| FIRST_NAME | texto | Nombre | No disponible separadamente | Sí |
-| LAST_NAME | texto | Apellidos | No disponible separadamente | Sí |
 | NATIONALITY | texto | Nacionalidad | No disponible | Sí |
 | COUNTRY_CODE | texto ISO 3166-1 alpha-2 | País | No disponible | Sí |
-| FLAG_URL | URL | Bandera | No disponible; no se inventa | Sí |
+| FLAG_URL | URL | Bandera derivada de `COUNTRY_CODE` mediante flagcdn | Derivada automáticamente cuando el código es ISO 3166-1 alpha-2 válido | Sí |
 | BIRTH_DATE | fecha | Fecha de nacimiento | No disponible en LeagueGameLog | Sí |
 | AGE | entero calculado | Medida calculada desde BIRTH_DATE en Power BI; no existe en el encabezado CSV | Calculado en Power BI; no se almacena como edad permanente | Sí |
 | HEIGHT_METERS | decimal | Altura, metros; conversión de pies/pulgadas a 2 decimales | Catálogo legado | Sí |

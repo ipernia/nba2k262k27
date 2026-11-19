@@ -60,6 +60,12 @@ explícita; no se deduce de `MATCHUP`. Cuando la entrada sí incluye esa señal,
 se respeta sin añadir columnas al modelo. `AGE` debe calcularse en Power BI
 desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
 peticiones a servicios adicionales para fotografías, banderas o vídeos.
+`FIRST_NAME` y `LAST_NAME` no forman parte del esquema final porque
+`PLAYER_NAME` ya identifica al jugador. `COUNTRY_CODE` solo se conserva si
+puede proceder de una fuente válida; una URL de bandera de `flagcdn.com` se
+deriva automáticamente únicamente con un código ISO 3166-1 alpha-2 de dos
+letras. Los demás datos personales permanecen vacíos hasta disponer de una
+fuente documentada.
 
 La falta o ambigüedad de `MATCHUP` no descarta partidos ni estadísticas. Si la
 fuente confirma cancha neutral pero no localía oficial, se conserva el orden
