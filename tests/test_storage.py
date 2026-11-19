@@ -218,6 +218,42 @@ def test_existing_catalogs_are_reduced_to_the_core_columns(tmp_path: Path) -> No
     )
     assert players[1]["PLAYER_ID"] == "24"
     assert players[1]["PLAYER_HEADSHOT_URL"] == "assets/player_silhouette.png"
+
+
+def test_player_catalog_removes_redundant_names_and_derives_flag_url(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    (data_directory / "players.csv").write_text(
+        "PLAYER_ID,PLAYER_NAME,FIRST_NAME,LAST_NAME,COUNTRY_CODE\n"
+        "23,Player One,Player,One,us\n",
+        encoding="utf-8",
+    )
+
+    save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS)
+
+    player = read_csv(data_directory / "players.csv")[0]
+    assert "FIRST_NAME" not in player
+    assert "LAST_NAME" not in player
+    assert player["COUNTRY_CODE"] == "US"
+    assert player["FLAG_URL"] == "https://flagcdn.com/w80/us.png"
+
+
+def test_player_catalog_rejects_invalid_country_code(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    (data_directory / "players.csv").write_text(
+        "PLAYER_ID,PLAYER_NAME,COUNTRY_CODE,FLAG_URL\n"
+        "23,Player One,USA,https://example.com/old.png\n",
+        encoding="utf-8",
+    )
+
+    save_game_logs(data_directory, PLAYER_ROWS, TEAM_ROWS)
+
+    player = read_csv(data_directory / "players.csv")[0]
+    assert player["COUNTRY_CODE"] == ""
+    assert player["FLAG_URL"] == ""
     image = Path(__file__).parents[1] / "assets" / "player_silhouette.png"
     assert image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 

@@ -63,8 +63,6 @@ _DEFAULT_PLAYER_FACE_URL = "assets/player_silhouette.png"
 _PLAYER_CATALOG_COLUMNS = (
     "PLAYER_ID",
     "PLAYER_NAME",
-    "FIRST_NAME",
-    "LAST_NAME",
     "NATIONALITY",
     "COUNTRY_CODE",
     "FLAG_URL",
@@ -232,10 +230,17 @@ def save_game_logs(
                 or row.get("PLAYER_FACE_URL", "").strip()
                 or _DEFAULT_PLAYER_FACE_URL
             )
+            mapped_existing_player = _map_existing_player(row, headshot)
+            country_code = (
+                mapped_existing_player.get("COUNTRY_CODE", "").strip().upper()
+            )
+            if country_code and not re.fullmatch(r"[A-Z]{2}", country_code):
+                mapped_existing_player["COUNTRY_CODE"] = ""
+                mapped_existing_player["FLAG_URL"] = ""
             _merge_row(
                 player_catalog,
                 list(_PLAYER_CATALOG_COLUMNS),
-                _map_existing_player(row, headshot),
+                mapped_existing_player,
                 ("PLAYER_ID",),
             )
     for row in player_season_entities:
@@ -430,6 +435,18 @@ def save_game_logs(
             team_catalog, team_stats, games, season, updated_at
         )
 
+    for player in player_catalog.values():
+        country_code = _serialize_value(player.get("COUNTRY_CODE", "")).strip().upper()
+        if re.fullmatch(r"[A-Z]{2}", country_code):
+            player["COUNTRY_CODE"] = country_code
+            if not _serialize_value(player.get("FLAG_URL", "")).strip():
+                player["FLAG_URL"] = (
+                    f"https://flagcdn.com/w80/{country_code.lower()}.png"
+                )
+        else:
+            player["COUNTRY_CODE"] = ""
+            player["FLAG_URL"] = ""
+
     tables = (
         (
             "players.csv",
@@ -471,7 +488,14 @@ def save_game_logs(
     counts = {"P": 0, "T": 0}
     for filename, key_columns, rows, fixed_columns, excluded_columns in tables:
         replace_empty_by_key: dict[RowKey, frozenset[str]] = {}
-        if filename == "teams.csv":
+        if filename == "players.csv":
+            replace_empty_by_key = {
+                _row_key(row, key_columns): frozenset(
+                    {"COUNTRY_CODE", "FLAG_URL"}
+                )
+                for row in rows
+            }
+        elif filename == "teams.csv":
             split_columns = frozenset(
                 {"HOME_WINS", "HOME_LOSSES", "AWAY_WINS", "AWAY_LOSSES"}
             )
@@ -919,6 +943,18 @@ def _map_existing_player(row: Mapping[str, object], headshot: str) -> CSVRow:
         mapped["COLLEGE"] = college
     if jersey_number and not mapped.get("JERSEY_NUMBER"):
         mapped["JERSEY_NUMBER"] = jersey_number
+    country_code = _serialize_value(
+        mapped.get("COUNTRY_CODE", "")
+    ).strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", country_code):
+        mapped["COUNTRY_CODE"] = country_code
+        if not mapped.get("FLAG_URL"):
+            mapped["FLAG_URL"] = (
+                f"https://flagcdn.com/w80/{country_code.lower()}.png"
+            )
+    else:
+        mapped["COUNTRY_CODE"] = ""
+        mapped["FLAG_URL"] = ""
     return mapped
 
 
