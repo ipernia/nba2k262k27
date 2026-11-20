@@ -45,6 +45,8 @@ respuesta vacía de NBA Stats.
 | Nacionalidad | `CommonPlayerInfo.COUNTRY`, conservada como `NATIONALITY`; `COUNTRY_CODE` se deriva con `pycountry` a ISO 3166-1 alpha-2 |
 | Nacimiento, altura, peso, posición y dorsal | `CommonPlayerInfo.BIRTHDATE`, `HEIGHT`, `WEIGHT`, `POSITION` y `JERSEY`; altura y peso se convierten a unidades métricas |
 | Local/visitante | Solo se confirma con los dos `MATCHUP` recíprocos (`vs.` y `@`); si no, los IDs de `GAMES` se ordenan de forma determinista y `TEAM_GAME_STATS.IS_HOME` queda vacío |
+| Cancha neutral | Señal explícita de NBA Stats; si ambos equipos tienen `IS_HOME` vacío y no hay señal, se infiere `IS_NEUTRAL_SITE=True` |
+| Porcentajes `*_PCT` | Los ratios de `LeagueGameLog` se conservan en escala 0–1; `WIN_PCT` se deriva como `WINS / GAMES_PLAYED` |
 | Marcador y ganador | `PTS` de ambos equipos; ganador es el ID del mayor marcador |
 | `SEASON` / `SEASON_TYPE` | Parámetros de la ejecución y `SEASON_ID` legado |
 | Acumulados regulares en TEAMS | Agregación de partidos finalizados para la temporada consultada; los playoffs se excluyen |
@@ -62,12 +64,10 @@ país, nacimiento, altura, peso, posición y dorsal, pero no ofrece un código
 ISO; los países que no puedan convertirse se conservan en `NATIONALITY` y
 dejan `COUNTRY_CODE` vacío. Todavía no se recopilan Draft, premios, datos de
 carrera, arena/capacidad, color, clasificación oficial, horas
-locales/UTC, asistencia, overtime, neutralidad, ronda de playoffs ni highlights
-verificados.
-`IS_NEUTRAL_SITE` queda vacío si no llega una señal
-explícita; no se deduce de `MATCHUP`. Cuando la entrada sí incluye esa señal,
-se respeta sin añadir columnas al modelo. `AGE` debe calcularse en Power BI
-desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
+locales/UTC, asistencia, overtime, ronda de playoffs ni highlights verificados.
+Una señal explícita de neutralidad se respeta; en su ausencia, la falta de
+`IS_HOME` para ambos equipos se toma como cancha neutral. `AGE` debe calcularse
+en Power BI desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
 peticiones a servicios adicionales para fotografías, banderas o vídeos; las
 URLs de bandera se construyen localmente a partir de `COUNTRY_CODE`.
 `FIRST_NAME` y `LAST_NAME` no forman parte del esquema final porque
@@ -77,6 +77,13 @@ deriva automáticamente únicamente con un código ISO 3166-1 alpha-2 de dos
 letras. Los códigos de país válidos ya almacenados no vuelven a consultarse;
 los demás datos personales permanecen vacíos hasta disponer de una fuente
 documentada.
+
+Todos los campos `*_PCT`, incluido `WIN_PCT`, se guardan como valores decimales
+entre 0 y 1. Los valores recibidos no se multiplican ni se dividen. Si un valor
+no es numérico o queda fuera de ese rango, la actualización se rechaza sin
+corregir su escala automáticamente. Al importar en Power BI, se debe interpretar
+el punto como separador decimal (por ejemplo, con la configuración regional
+English (United States)) y después aplicar el formato visual de porcentaje.
 
 La falta o ambigüedad de `MATCHUP` no descarta partidos ni estadísticas. Si la
 fuente confirma cancha neutral pero no localía oficial, se conserva el orden
