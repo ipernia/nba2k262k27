@@ -98,9 +98,16 @@ Los catálogos principales usan los esquemas documentados en
   regular disponibles.
 
 `games.csv` identifica temporada y tipo de temporada, equipos local y visitante,
-resultado, estado y metadatos opcionales. Cuando no se conoce la localía o una
-fecha/hora, el campo correspondiente permanece vacío; no se infiere ni se
-convierte un desconocido en cero.
+resultado, estado y metadatos opcionales. Cuando no se puede confirmar la
+localía, los IDs de los equipos mantienen un orden determinista; si ambos
+equipos tienen `IS_HOME` vacío y no hay señal explícita, se marca
+`IS_NEUTRAL_SITE=True`. Las fechas y horas desconocidas permanecen vacías.
+
+Los campos `*_PCT` se guardan como valores decimales de 0 a 1, sin conversión
+de escala; Power BI debe aplicar el formato visual de porcentaje. Al importar
+el CSV, configura el punto como separador decimal (por ejemplo, con la
+configuración regional English (United States)); con la configuración
+`es-ES`, el punto de `0.429` puede interpretarse como separador de miles.
 
 Los CSV de temporadas, si existen, se mantienen como fuentes temporales de
 migración y no forman parte del modelo de Power BI:

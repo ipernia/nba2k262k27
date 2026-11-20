@@ -17,6 +17,10 @@
 - Se completan los perfiles incompletos de jugadores desde `CommonPlayerInfo`,
   con fecha, medidas, posición, dorsal y nacionalidad; los valores se
   normalizan y se deriva la URL de bandera.
+- Se infiere cancha neutral si ambos equipos carecen de `IS_HOME` y no existe
+  señal explícita de cancha.
+- Se conservan los campos `*_PCT` en escala decimal de 0 a 1 para aplicar el
+  formato visual de porcentaje en Power BI.
 
 - Se simplificó la salida a los CSV de catálogos y estadísticas de partidos.
 - Se añadió `games.csv` con los datos del partido y los IDs de los equipos

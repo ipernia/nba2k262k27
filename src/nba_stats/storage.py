@@ -444,13 +444,40 @@ def save_game_logs(
             stats["IS_HOME"] = (
                 ("True" if team_id == home_team_id else "False") if home_team_id else ""
             )
+        teams_by_game: dict[str, set[str]] = {}
+        teams_with_home_info: set[tuple[str, str]] = set()
+        for stats in team_stats:
+            game_id = _serialize_value(stats.get("GAME_ID", "")).strip()
+            team_id = _serialize_value(stats.get("TEAM_ID", "")).strip()
+            teams_by_game.setdefault(game_id, set()).add(team_id)
+            if _optional_boolean(stats.get("IS_HOME", "")):
+                teams_with_home_info.add((game_id, team_id))
         for row in updated_games:
             game_id = _serialize_value(row.get("GAME_ID", "")).strip()
+            existing_game = known_by_id.get((game_id,), {})
             if game_id not in location_present_game_ids:
-                existing_game = known_by_id.get((game_id,), {})
                 for column in ("HOME_TEAM_ID", "AWAY_TEAM_ID"):
                     if existing_game.get(column, "").strip():
                         row[column] = existing_game[column]
+            if not _optional_boolean(row.get("IS_NEUTRAL_SITE", "")):
+                existing_neutral_site = _optional_boolean(
+                    existing_game.get("IS_NEUTRAL_SITE", "")
+                )
+                if existing_neutral_site:
+                    row["IS_NEUTRAL_SITE"] = existing_neutral_site
+                else:
+                    game_team_ids = {
+                        _serialize_value(row.get(column, "")).strip()
+                        for column in ("HOME_TEAM_ID", "AWAY_TEAM_ID")
+                    }
+                    if (
+                        game_team_ids.issubset(teams_by_game.get(game_id, set()))
+                        and all(
+                            (game_id, team_id) not in teams_with_home_info
+                            for team_id in game_team_ids
+                        )
+                    ):
+                        row["IS_NEUTRAL_SITE"] = "True"
             _merge_row(
                 known_by_id,
                 game_headers,
@@ -1303,17 +1330,21 @@ def _prepare_table(
             key: {column: row.get(column, "") for column in fixed_columns}
             for key, row in existing_rows.items()
         }
+    for row in existing_rows.values():
+        _validate_percentage_columns(row)
 
     for row in incoming_rows:
         key = _row_key(row, key_columns)
+        incoming_row = {
+            column: _serialize_value(value)
+            for column, value in row.items()
+            if column not in excluded_columns
+        }
+        _validate_percentage_columns(incoming_row)
         _merge_row(
             existing_rows,
             headers,
-            {
-                column: value
-                for column, value in row.items()
-                if column not in excluded_columns
-            },
+            incoming_row,
             key_columns,
             replace_empty_columns=(replace_empty_by_key or {}).get(key, frozenset()),
         )
@@ -1323,6 +1354,22 @@ def _prepare_table(
     if not headers:
         return None
     return path, headers, existing_rows
+
+
+def _validate_percentage_columns(row: CSVRow) -> None:
+    for column, value in row.items():
+        if column.upper().endswith("_PCT") and value.strip():
+            try:
+                percentage = float(value)
+            except ValueError as error:
+                raise CSVStorageError(
+                    f"El porcentaje {column} no es numérico: {value!r}."
+                ) from error
+            if not math.isfinite(percentage) or not 0 <= percentage <= 1:
+                raise CSVStorageError(
+                    f"El porcentaje {column} está fuera del rango 0 a 1: "
+                    f"{value!r}; no se corrige automáticamente."
+                )
 
 
 def _merge_row(

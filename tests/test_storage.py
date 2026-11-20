@@ -106,6 +106,98 @@ def test_creates_csvs_with_image_urls_games_and_game_stats(
     assert "TEAM_NICKNAME" not in teams[0]
 
 
+def test_preserves_percentage_ratios_and_win_pct(
+    tmp_path: Path,
+) -> None:
+    player_rows = [
+        PLAYER_ROWS[0]
+        | {
+            "FG_PCT": 0.427,
+            "FG3_PCT": 0.355,
+            "FT_PCT": 1.0,
+        }
+    ]
+    team_rows = [
+        TEAM_ROWS[0] | {"FG_PCT": 0.427, "FG3_PCT": 0.355, "FT_PCT": 0.0},
+        TEAM_ROWS[1] | {"FG_PCT": 0.355, "FG3_PCT": 0.427, "FT_PCT": None},
+    ]
+
+    save_game_logs(
+        tmp_path / "data",
+        player_rows,
+        team_rows,
+        season="2026-27",
+    )
+    save_game_logs(
+        tmp_path / "data",
+        player_rows,
+        team_rows,
+        season="2026-27",
+    )
+
+    player_stats = read_csv(tmp_path / "data" / "player_game_stats.csv")[0]
+    team_stats = {
+        row["TEAM_ID"]: row
+        for row in read_csv(tmp_path / "data" / "team_game_stats.csv")
+    }
+    teams = {row["TEAM_ID"]: row for row in read_csv(tmp_path / "data" / "teams.csv")}
+    assert player_stats["FIELD_GOAL_PCT"] == "0.427"
+    assert player_stats["THREE_POINT_PCT"] == "0.355"
+    assert player_stats["FREE_THROW_PCT"] == "1.0"
+    assert player_stats["POINTS"] == "10"
+    assert team_stats["1"]["FIELD_GOAL_PCT"] == "0.427"
+    assert team_stats["1"]["THREE_POINT_PCT"] == "0.355"
+    assert team_stats["1"]["FREE_THROW_PCT"] == "0.0"
+    assert team_stats["2"]["FIELD_GOAL_PCT"] == "0.355"
+    assert team_stats["2"]["THREE_POINT_PCT"] == "0.427"
+    assert team_stats["2"]["FREE_THROW_PCT"] == ""
+    assert team_stats["1"]["TEAM_POINTS"] == "100"
+    assert teams["1"]["WIN_PCT"] == "1.000"
+    assert teams["2"]["WIN_PCT"] == "0.000"
+
+
+def test_preserves_percentages_already_present_in_csv(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    (data_directory / "player_game_stats.csv").write_text(
+        "GAME_ID,PLAYER_ID,FIELD_GOAL_PCT,THREE_POINT_PCT,FREE_THROW_PCT\n"
+        "001,23,0.427,0.355,1.0\n",
+        encoding="utf-8",
+    )
+
+    save_game_logs(data_directory, [], [])
+
+    player_stats = read_csv(data_directory / "player_game_stats.csv")[0]
+    assert player_stats["FIELD_GOAL_PCT"] == "0.427"
+    assert player_stats["THREE_POINT_PCT"] == "0.355"
+    assert player_stats["FREE_THROW_PCT"] == "1.0"
+
+
+@pytest.mark.parametrize(
+    ("percentage", "message"),
+    [(427, "no se corrige automáticamente"), ("not-a-number", "no es numérico")],
+)
+def test_rejects_invalid_percentage_without_overwriting_csv(
+    tmp_path: Path,
+    percentage: int | str,
+    message: str,
+) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    player_stats_path = data_directory / "player_game_stats.csv"
+    player_stats_path.write_text(
+        "GAME_ID,PLAYER_ID,FIELD_GOAL_PCT\n001,23,0.427\n",
+        encoding="utf-8",
+    )
+    original_contents = player_stats_path.read_bytes()
+    player_rows = [PLAYER_ROWS[0] | {"FG_PCT": percentage}]
+
+    with pytest.raises(CSVStorageError, match=message):
+        save_game_logs(data_directory, player_rows, TEAM_ROWS)
+
+    assert player_stats_path.read_bytes() == original_contents
+
+
 def test_static_catalog_contains_all_nba_franchises() -> None:
     assert len(TEAM_STATIC_DATA) == 30
     assert len(set(TEAM_STATIC_DATA)) == 30
@@ -356,6 +448,7 @@ def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None
     assert teams[0]["WINS"] == "3"
     assert teams[0]["LOSSES"] == "4"
     assert teams[0]["GAMES_PLAYED"] == "7"
+    assert teams[0]["WIN_PCT"] == "0.429"
     assert teams[0]["HOME_WINS"] == ""
     assert teams[0]["HOME_LOSSES"] == ""
     assert teams[0]["AWAY_WINS"] == ""
@@ -395,6 +488,7 @@ def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None
     ]
     assert team_seasons[0]["TEAM_ID"] == "1"
     assert team_seasons[0]["DIVISION"] == "Test"
+    assert team_seasons[0]["WIN_PCT"] == "0.429"
 
 
 def test_empty_results_do_not_create_or_change_files(tmp_path: Path) -> None:
@@ -572,7 +666,7 @@ def test_preserves_game_stats_when_matchup_is_inconsistent(tmp_path: Path) -> No
     assert counts == {"P": 1, "T": 2}
     assert games[0]["HOME_TEAM_ID"] == "1"
     assert games[0]["AWAY_TEAM_ID"] == "2"
-    assert games[0]["IS_NEUTRAL_SITE"] == ""
+    assert games[0]["IS_NEUTRAL_SITE"] == "True"
     assert [row["IS_HOME"] for row in team_stats] == ["", ""]
     assert [row["TEAM_POINTS"] for row in team_stats] == ["100", "98"]
 
@@ -633,7 +727,7 @@ def test_uses_source_order_for_neutral_game_without_official_home(
     assert all(row["IS_HOME"] == "" for row in team_stats)
 
 
-def test_uses_deterministic_order_when_locality_and_neutrality_are_unknown(
+def test_infers_neutral_site_when_both_team_localities_are_unknown(
     tmp_path: Path,
 ) -> None:
     data_directory = tmp_path / "data"
@@ -649,7 +743,7 @@ def test_uses_deterministic_order_when_locality_and_neutrality_are_unknown(
     assert counts == {"P": 1, "T": 2}
     assert game["HOME_TEAM_ID"] == "1"
     assert game["AWAY_TEAM_ID"] == "2"
-    assert game["IS_NEUTRAL_SITE"] == ""
+    assert game["IS_NEUTRAL_SITE"] == "True"
     assert all(row["IS_HOME"] == "" for row in team_stats)
 
 
@@ -674,8 +768,31 @@ def test_processes_game_0022600189_with_ambiguous_matchup(tmp_path: Path) -> Non
     team_stats = read_csv(data_directory / "team_game_stats.csv")
     assert counts == {"P": 1, "T": 2}
     assert game["GAME_ID"] == "0022600189"
-    assert game["IS_NEUTRAL_SITE"] == ""
+    assert game["IS_NEUTRAL_SITE"] == "True"
     assert len(team_stats) == 2
+
+
+def test_does_not_infer_neutrality_over_an_explicit_false_signal(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    non_neutral_rows = [
+        {
+            key: value
+            for key, value in (TEAM_ROWS[0] | {"IS_NEUTRAL_SITE": False}).items()
+            if key != "MATCHUP"
+        },
+        {
+            key: value
+            for key, value in (TEAM_ROWS[1] | {"IS_NEUTRAL_SITE": False}).items()
+            if key != "MATCHUP"
+        },
+    ]
+
+    save_game_logs(data_directory, PLAYER_ROWS, non_neutral_rows)
+
+    game = read_csv(data_directory / "games.csv")[0]
+    assert game["IS_NEUTRAL_SITE"] == "False"
 
 
 def test_keeps_known_locality_when_another_game_is_ambiguous(tmp_path: Path) -> None:

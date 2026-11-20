@@ -5,6 +5,11 @@
 - Los CSV son UTF-8 con BOM. Aunque CSV no conserva tipos, las columnas se
   representan con los tipos lógicos indicados abajo.
 - Un valor vacío significa desconocido/no disponible; no equivale a cero.
+- Los campos `*_PCT` se guardan como valores decimales entre 0 y 1, sin
+  conversión de escala. Power BI debe interpretarlos como decimales y aplicar
+  el formato visual de porcentaje.
+- Los valores no vacíos que no sean numéricos o queden fuera de ese rango se
+  rechazan; no se corrigen automáticamente por escala.
 - `NBA Stats` identifica datos que entregan los endpoints `LeagueGameLog` y
   `CommonPlayerInfo` mediante la librería comunitaria `nba_api`. La librería
   no es un producto oficial de NBA y el servicio no ofrece un SLA público.
@@ -34,7 +39,7 @@ Una fila por franquicia; clave primaria `TEAM_ID`.
 | WINS | entero | Victorias regulares de la temporada indicada al ejecutar | Derivado de resultados de GAMES | Sí | Cada ejecución |
 | LOSSES | entero | Derrotas regulares de la temporada indicada al ejecutar | Derivado de resultados de GAMES | Sí | Cada ejecución |
 | GAMES_PLAYED | entero | Partidos regulares finalizados usados en el cálculo | Derivado | Sí | Cada ejecución |
-| WIN_PCT | decimal | `WINS / GAMES_PLAYED`, redondeado a 3 decimales | Derivado | Sí | Cada ejecución |
+| WIN_PCT | decimal | Proporción de victorias (`WINS / GAMES_PLAYED`), redondeada a 3 decimales | Derivado | Sí | Cada ejecución |
 | CONFERENCE_RANK | entero | Posición oficial en conferencia | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
 | DIVISION_RANK | entero | Posición oficial en división | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
 | GAMES_BACK | decimal | Diferencia oficial respecto al líder | NBA Stats `LeagueStandings`, temporada regular | Sí | Cada ejecución |
@@ -72,7 +77,7 @@ Una fila por partido; clave primaria `GAME_ID`.
 | WINNER_TEAM_ID | entero | Equipo con más puntos | Derivado del marcador | Sí |
 | GAME_DURATION | entero | Duración; unidad no disponible | No disponible | Sí |
 | OVERTIME_PERIODS | entero | Número de prórrogas | No disponible en LeagueGameLog | Sí |
-| IS_NEUTRAL_SITE | booleano | Cancha neutral | Solo señal explícita; vacío si se desconoce, no se infiere de `MATCHUP` | Sí |
+| IS_NEUTRAL_SITE | booleano | Cancha neutral | Señal explícita; si ambos equipos tienen `IS_HOME` vacío, se infiere `True` | Sí |
 | ARENA_NAME | texto | Pabellón | No disponible | Sí |
 | ATTENDANCE | entero | Asistencia; personas | No disponible | Sí |
 | PLAYOFF_ROUND | texto | Ronda de playoffs | No disponible | Sí |
@@ -143,13 +148,13 @@ Una fila por equipo y partido; clave compuesta `GAME_ID + TEAM_ID`.
 | TEAM_POINTS | entero | Puntos anotados | NBA Stats `PTS` | Sí |
 | FIELD_GOALS_MADE | entero | Tiros de campo anotados | NBA Stats `FGM` | Sí |
 | FIELD_GOALS_ATTEMPTED | entero | Tiros de campo intentados | NBA Stats `FGA` | Sí |
-| FIELD_GOAL_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FG_PCT` | Sí |
+| FIELD_GOAL_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FG_PCT`, conservado sin conversión | Sí |
 | THREE_POINTS_MADE | entero | Triples anotados | NBA Stats `FG3M` | Sí |
 | THREE_POINTS_ATTEMPTED | entero | Triples intentados | NBA Stats `FG3A` | Sí |
-| THREE_POINT_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FG3_PCT` | Sí |
+| THREE_POINT_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FG3_PCT`, conservado sin conversión | Sí |
 | FREE_THROWS_MADE | entero | Tiros libres anotados | NBA Stats `FTM` | Sí |
 | FREE_THROWS_ATTEMPTED | entero | Tiros libres intentados | NBA Stats `FTA` | Sí |
-| FREE_THROW_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FT_PCT` | Sí |
+| FREE_THROW_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FT_PCT`, conservado sin conversión | Sí |
 | OFFENSIVE_REBOUNDS | entero | Rebotes ofensivos | NBA Stats `OREB` | Sí |
 | DEFENSIVE_REBOUNDS | entero | Rebotes defensivos | NBA Stats `DREB` | Sí |
 | TOTAL_REBOUNDS | entero | Rebotes totales | NBA Stats `REB` | Sí |
@@ -167,8 +172,13 @@ Una fila por equipo y partido; clave compuesta `GAME_ID + TEAM_ID`.
 | TEAM_TURNOVERS | entero | Pérdidas de equipo | No disponible | Sí |
 
 Los partidos neutrales y aquellos sin localía confirmada no se cuentan en
-análisis de rendimiento en casa/fuera. Los porcentajes se guardan como los
-entrega NBA Stats (fracción de 0 a 1).
+análisis de rendimiento en casa/fuera. Si ambos equipos carecen de `IS_HOME`
+y no hay señal explícita de neutralidad, `IS_NEUTRAL_SITE` se establece en
+`True`; las señales explícitas `True` o `False` se respetan. Todos los campos
+`*_PCT` se guardan como valores decimales entre 0 y 1, sin conversión de escala.
+En Power BI se debe interpretar el punto como separador decimal al importar
+(por ejemplo, con la configuración regional English (United States)) y luego
+aplicar el formato visual de porcentaje.
 Las estadísticas avanzadas no se calculan si la fuente no las entrega.
 
 ## PLAYER_GAME_STATS (`player_game_stats.csv`)
@@ -186,13 +196,13 @@ Una fila por jugador y partido; clave compuesta `GAME_ID + PLAYER_ID`.
 | POINTS | entero | Puntos | NBA Stats `PTS` | Sí |
 | FIELD_GOALS_MADE | entero | Tiros de campo anotados | NBA Stats `FGM` | Sí |
 | FIELD_GOALS_ATTEMPTED | entero | Tiros de campo intentados | NBA Stats `FGA` | Sí |
-| FIELD_GOAL_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FG_PCT` | Sí |
+| FIELD_GOAL_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FG_PCT`, conservado sin conversión | Sí |
 | THREE_POINTS_MADE | entero | Triples anotados | NBA Stats `FG3M` | Sí |
 | THREE_POINTS_ATTEMPTED | entero | Triples intentados | NBA Stats `FG3A` | Sí |
-| THREE_POINT_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FG3_PCT` | Sí |
+| THREE_POINT_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FG3_PCT`, conservado sin conversión | Sí |
 | FREE_THROWS_MADE | entero | Tiros libres anotados | NBA Stats `FTM` | Sí |
 | FREE_THROWS_ATTEMPTED | entero | Tiros libres intentados | NBA Stats `FTA` | Sí |
-| FREE_THROW_PCT | decimal | Porcentaje/rate oficial | NBA Stats `FT_PCT` | Sí |
+| FREE_THROW_PCT | decimal | Proporción de 0 a 1 | NBA Stats `FT_PCT`, conservado sin conversión | Sí |
 | OFFENSIVE_REBOUNDS | entero | Rebotes ofensivos | NBA Stats `OREB` | Sí |
 | DEFENSIVE_REBOUNDS | entero | Rebotes defensivos | NBA Stats `DREB` | Sí |
 | TOTAL_REBOUNDS | entero | Rebotes totales | NBA Stats `REB` | Sí |
