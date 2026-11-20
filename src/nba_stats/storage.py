@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from numbers import Integral, Real
 from pathlib import Path
 from typing import TypeAlias
@@ -86,6 +86,14 @@ _PLAYER_CATALOG_COLUMNS = (
     "IS_ACTIVE",
     "CURRENT_TEAM_ID",
     "LAST_UPDATED",
+)
+_PLAYER_PROFILE_REQUIRED_COLUMNS = (
+    "COUNTRY_CODE",
+    "BIRTH_DATE",
+    "HEIGHT_METERS",
+    "WEIGHT_KG",
+    "POSITION",
+    "JERSEY_NUMBER",
 )
 _TEAM_CATALOG_COLUMNS = (
     "TEAM_ID",
@@ -211,6 +219,7 @@ def save_game_logs(
     season: str | None = None,
     season_type: str = "Regular Season",
     standings_rows: Sequence[Mapping[str, object]] | None = None,
+    player_info_rows: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, int]:
     """Acumula catálogos y estadísticas, normalizando temporadas existentes."""
     players = _validate_rows(player_rows, _PLAYER_REQUIRED_COLUMNS, "jugadores")
@@ -278,6 +287,37 @@ def save_game_logs(
                 ),
                 "LAST_UPDATED": updated_at,
             },
+            ("PLAYER_ID",),
+        )
+    for row in player_info_rows or ():
+        player_id = _numeric_identifier(row.get("PLAYER_ID"), "PLAYER_ID")
+        player_info: CSVRow = {"PLAYER_ID": player_id}
+        nationality = _serialize_value(row.get("NATIONALITY", "")).strip()
+        country_code = _serialize_value(row.get("COUNTRY_CODE", "")).strip().upper()
+        birth_date = _normalize_birth_date(row.get("BIRTHDATE", ""))
+        height_meters = _height_to_meters(row.get("HEIGHT", ""))
+        weight_kg = _pounds_to_kilograms(row.get("WEIGHT", ""))
+        position = _serialize_value(row.get("POSITION", "")).strip()
+        jersey_number = _serialize_value(row.get("JERSEY", "")).strip()
+        if nationality:
+            player_info["NATIONALITY"] = nationality
+        if re.fullmatch(r"[A-Z]{2}", country_code):
+            player_info["COUNTRY_CODE"] = country_code
+        if birth_date:
+            player_info["BIRTH_DATE"] = birth_date
+        if height_meters:
+            player_info["HEIGHT_METERS"] = height_meters
+        if weight_kg:
+            player_info["WEIGHT_KG"] = weight_kg
+        if position:
+            player_info["POSITION"] = position
+        if jersey_number:
+            player_info["JERSEY_NUMBER"] = jersey_number
+        player_info["LAST_UPDATED"] = updated_at
+        _merge_row(
+            player_catalog,
+            list(_PLAYER_CATALOG_COLUMNS),
+            player_info,
             ("PLAYER_ID",),
         )
 
@@ -531,6 +571,76 @@ def save_game_logs(
     prepared.extend(season_tables)
     _write_tables(prepared)
     return counts
+
+
+def player_ids_missing_profile_info(
+    data_directory: Path,
+    player_rows: Sequence[Mapping[str, object]] = (),
+) -> list[str]:
+    """Devuelve IDs con algún campo de perfil requerido todavía vacío."""
+    profiles: dict[str, dict[str, str]] = {}
+    existing_sources = (
+        (data_directory / "players.csv", ("PLAYER_ID",)),
+        (data_directory / "player_seasons.csv", _PLAYER_SEASON_KEY),
+        (data_directory / "old" / "players.csv", ("PLAYER_ID",)),
+    )
+    for path, key_columns in existing_sources:
+        if not path.exists():
+            continue
+        _, rows = _read_existing(path, key_columns)
+        for row in rows.values():
+            player_id = _numeric_identifier(row["PLAYER_ID"], "PLAYER_ID")
+            profile = profiles.setdefault(player_id, {})
+            for column, value in _existing_player_profile_values(row).items():
+                profile.setdefault(column, value)
+    for row in player_rows:
+        player_id = _numeric_identifier(row.get("PLAYER_ID"), "PLAYER_ID")
+        profiles.setdefault(player_id, {})
+    return sorted(
+        (
+            player_id
+            for player_id, profile in profiles.items()
+            if any(
+                not profile.get(column) for column in _PLAYER_PROFILE_REQUIRED_COLUMNS
+            )
+        ),
+        key=int,
+    )
+
+
+def _existing_player_profile_values(row: Mapping[str, object]) -> dict[str, str]:
+    profile: dict[str, str] = {}
+    country_code = _serialize_value(row.get("COUNTRY_CODE", "")).strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", country_code):
+        profile["COUNTRY_CODE"] = country_code
+
+    birth_date = _normalize_birth_date(
+        row.get("BIRTH_DATE", "") or row.get("BIRTHDATE", "")
+    )
+    if birth_date:
+        profile["BIRTH_DATE"] = birth_date
+    height_meters = _serialize_value(
+        row.get("HEIGHT_METERS", "")
+    ).strip() or _height_to_meters(row.get("HEIGHT", ""))
+    if height_meters:
+        profile["HEIGHT_METERS"] = height_meters
+    weight_kg = _serialize_value(
+        row.get("WEIGHT_KG", "")
+    ).strip() or _pounds_to_kilograms(row.get("WEIGHT", ""))
+    if weight_kg:
+        profile["WEIGHT_KG"] = weight_kg
+
+    position = _serialize_value(row.get("POSITION", "")).strip()
+    if position:
+        profile["POSITION"] = position
+    jersey_number = (
+        _serialize_value(row.get("JERSEY_NUMBER", "")).strip()
+        or _serialize_value(row.get("JERSEY_NUM", "")).strip()
+        or _serialize_value(row.get("JERSEY", "")).strip()
+    )
+    if jersey_number:
+        profile["JERSEY_NUMBER"] = jersey_number
+    return profile
 
 
 def _prepare_existing_seasons(
@@ -994,6 +1104,16 @@ def _height_to_meters(value: object) -> str:
     if inches > 11:
         return ""
     return f"{(feet * 12 + inches) * 0.0254:.2f}"
+
+
+def _normalize_birth_date(value: object) -> str:
+    text = _serialize_value(value).strip()
+    if not text:
+        return ""
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return ""
 
 
 def _pounds_to_kilograms(value: object) -> str:

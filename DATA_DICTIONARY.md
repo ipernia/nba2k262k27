@@ -5,9 +5,9 @@
 - Los CSV son UTF-8 con BOM. Aunque CSV no conserva tipos, las columnas se
   representan con los tipos lógicos indicados abajo.
 - Un valor vacío significa desconocido/no disponible; no equivale a cero.
-- `NBA Stats` identifica datos que entrega el endpoint `LeagueGameLog` de NBA
-  Stats mediante la librería comunitaria `nba_api`. La librería no es un
-  producto oficial de NBA y el servicio no ofrece un SLA público.
+- `NBA Stats` identifica datos que entregan los endpoints `LeagueGameLog` y
+  `CommonPlayerInfo` mediante la librería comunitaria `nba_api`. La librería
+  no es un producto oficial de NBA y el servicio no ofrece un SLA público.
 - `Derivado` identifica transformaciones deterministas de valores de esa
   fuente; `Legado` datos trasladados de CSV previos; `Plantilla NBA` URLs
   construidas con IDs, no comprobadas mediante una solicitud HTTP.
@@ -94,15 +94,15 @@ Una fila por jugador; clave primaria `PLAYER_ID`.
 |---|---|---|---|---|
 | PLAYER_ID | entero | ID oficial del jugador | NBA Stats; clave | No |
 | PLAYER_NAME | texto | Nombre completo | NBA Stats / legado | Sí |
-| NATIONALITY | texto | Nacionalidad | No disponible | Sí |
-| COUNTRY_CODE | texto ISO 3166-1 alpha-2 | País | No disponible | Sí |
+| NATIONALITY | texto | País/nacionalidad tal como lo devuelve `CommonPlayerInfo.COUNTRY` | NBA Stats | Sí |
+| COUNTRY_CODE | texto ISO 3166-1 alpha-2 | Código de país derivado de `NATIONALITY` | Derivado con `pycountry`; se consulta `CommonPlayerInfo` cuando falta o no es válido | Sí |
 | FLAG_URL | URL | Bandera derivada de `COUNTRY_CODE` mediante flagcdn | Derivada automáticamente cuando el código es ISO 3166-1 alpha-2 válido | Sí |
-| BIRTH_DATE | fecha | Fecha de nacimiento | No disponible en LeagueGameLog | Sí |
+| BIRTH_DATE | fecha | Fecha de nacimiento, formato `YYYY-MM-DD` | NBA Stats `CommonPlayerInfo.BIRTHDATE` | Sí |
 | AGE | entero calculado | Medida calculada desde BIRTH_DATE en Power BI; no existe en el encabezado CSV | Calculado en Power BI; no se almacena como edad permanente | Sí |
-| HEIGHT_METERS | decimal | Altura, metros; conversión de pies/pulgadas a 2 decimales | Catálogo legado | Sí |
-| WEIGHT_KG | decimal | Peso, kg; libras × 0,45359237, a 2 decimales | Catálogo legado | Sí |
-| POSITION | texto | Posición | CSV de temporadas legado | Sí |
-| JERSEY_NUMBER | texto | Dorsal; se mantiene texto para permitir `00` | CSV de temporadas legado | Sí |
+| HEIGHT_METERS | decimal | Altura, metros; conversión de pies/pulgadas a 2 decimales | NBA Stats `CommonPlayerInfo.HEIGHT` / legado | Sí |
+| WEIGHT_KG | decimal | Peso, kg; libras × 0,45359237, a 2 decimales | NBA Stats `CommonPlayerInfo.WEIGHT` / legado | Sí |
+| POSITION | texto | Posición | NBA Stats `CommonPlayerInfo.POSITION` / CSV legado de temporadas | Sí |
+| JERSEY_NUMBER | texto | Dorsal; se mantiene texto para permitir `00` | NBA Stats `CommonPlayerInfo.JERSEY` / CSV legado de temporadas | Sí |
 | PLAYER_HEADSHOT_URL | URL/ruta | Fotografía; silueta si falta una URL previa | Plantilla NBA o asset local; no validada por HTTP | Sí |
 | COLLEGE | texto | Centro de procedencia | Campo legado `SCHOOL` | Sí |
 | COUNTRY_OF_ORIGIN | texto | País de origen | No disponible | Sí |
@@ -119,10 +119,17 @@ Una fila por jugador; clave primaria `PLAYER_ID`.
 | CURRENT_TEAM_ID | entero | Equipo actual, distinto del equipo en un partido | No disponible | Sí |
 | LAST_UPDATED | fecha-hora ISO 8601 | Momento UTC de la última escritura ETL | Reloj local UTC; no es fecha de la fuente | Sí |
 
-La migración legacy interpreta `HEIGHT` como `pies-pulgadas` y `WEIGHT` como
-libras. Los datos no interpretables se dejan vacíos. `INDIVIDUAL_ACHIEVEMENTS`
-no se desglosa automáticamente en premios porque no garantiza categorías
-consistentes; el CSV legado permanece en `data/old/`.
+Los campos de perfil se consultan en `CommonPlayerInfo` cuando falta al menos
+uno de ellos. `COUNTRY` se conserva en `NATIONALITY`; su código ISO se deriva
+con `pycountry`. Si el país no se reconoce, la nacionalidad se conserva y el
+código queda vacío. `BIRTHDATE` se normaliza a `YYYY-MM-DD`; `HEIGHT` se
+convierte de pies-pulgadas a metros y `WEIGHT` de libras a kilogramos, ambos
+con dos decimales. Los códigos y campos válidos se conservan y los perfiles
+completos no se vuelven a consultar. La migración legacy aplica las mismas
+conversiones a `HEIGHT` y `WEIGHT`. Los datos no interpretables se dejan
+vacíos. `INDIVIDUAL_ACHIEVEMENTS` no se desglosa automáticamente en premios
+porque no garantiza categorías consistentes; el CSV legado permanece en
+`data/old/`.
 
 ## TEAM_GAME_STATS (`team_game_stats.csv`)
 

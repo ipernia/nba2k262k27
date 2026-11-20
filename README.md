@@ -18,8 +18,15 @@ Las URLs de imagen se construyen directamente con los IDs de NBA.com:
 No se descargan imágenes ni se consultan camisetas o metadatos de licencia.
 Los datos estáticos de franquicias (identidad, colores, historial y pabellón)
 se mantienen en un catálogo local y no se consultan diariamente. Los campos
-que no están disponibles en las fuentes actuales permanecen vacíos; sus límites se describen en
-[`docs/data-sources.md`](docs/data-sources.md).
+que no están disponibles en las fuentes actuales permanecen vacíos; sus límites
+se describen en [`docs/data-sources.md`](docs/data-sources.md).
+
+Los perfiles incompletos de jugadores se actualizan desde `CommonPlayerInfo`:
+país, fecha de nacimiento, altura, peso, posición y dorsal. El país se conserva
+en `NATIONALITY`; `COUNTRY_CODE` se deriva como ISO 3166-1 alpha-2 y permite
+generar `FLAG_URL`. La fecha se normaliza a `YYYY-MM-DD`; altura y peso se
+convierten a metros y kilogramos. Los perfiles completos no se vuelven a
+consultar.
 
 Si un jugador ya tiene una fila en `players.csv` pero no tiene
 `PLAYER_HEADSHOT_URL`, se usa la imagen de respaldo

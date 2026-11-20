@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from nba_stats.storage import CSVStorageError, save_game_logs
+from nba_stats.storage import (
+    CSVStorageError,
+    player_ids_missing_profile_info,
+    save_game_logs,
+)
 from nba_stats.team_catalog import TEAM_STATIC_DATA
 
 PLAYER_ROWS = [
@@ -256,6 +260,59 @@ def test_player_catalog_rejects_invalid_country_code(tmp_path: Path) -> None:
     assert player["FLAG_URL"] == ""
     image = Path(__file__).parents[1] / "assets" / "player_silhouette.png"
     assert image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_saves_player_profile_fields_and_derives_country_flag(tmp_path: Path) -> None:
+    data_directory = tmp_path / "data"
+
+    save_game_logs(
+        data_directory,
+        PLAYER_ROWS,
+        TEAM_ROWS,
+        player_info_rows=[
+            {
+                "PLAYER_ID": "23",
+                "NATIONALITY": "France",
+                "COUNTRY_CODE": "FR",
+                "BIRTHDATE": "1998-07-14T00:00:00",
+                "HEIGHT": "6-8",
+                "WEIGHT": "215",
+                "POSITION": "G-F",
+                "JERSEY": "00",
+            }
+        ],
+    )
+
+    player = read_csv(data_directory / "players.csv")[0]
+    assert player["NATIONALITY"] == "France"
+    assert player["COUNTRY_CODE"] == "FR"
+    assert player["FLAG_URL"] == "https://flagcdn.com/w80/fr.png"
+    assert player["BIRTH_DATE"] == "1998-07-14"
+    assert player["HEIGHT_METERS"] == "2.03"
+    assert player["WEIGHT_KG"] == "97.52"
+    assert player["POSITION"] == "G-F"
+    assert player["JERSEY_NUMBER"] == "00"
+
+
+def test_only_returns_player_ids_with_incomplete_profile_info(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    (data_directory / "players.csv").write_text(
+        "PLAYER_ID,COUNTRY_CODE,BIRTH_DATE,HEIGHT_METERS,WEIGHT_KG,POSITION,"
+        "JERSEY_NUMBER\n"
+        "23,US,2000-01-02,2.03,97.52,G-F,00\n"
+        "24,US,2001-02-03,,102.06,F,4\n",
+        encoding="utf-8",
+    )
+
+    player_ids = player_ids_missing_profile_info(
+        data_directory,
+        [{"PLAYER_ID": 23}, {"PLAYER_ID": 25}],
+    )
+
+    assert player_ids == ["24", "25"]
 
 
 def test_moves_entity_fields_out_of_existing_season_csvs(tmp_path: Path) -> None:
