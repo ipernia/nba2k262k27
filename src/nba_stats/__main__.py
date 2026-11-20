@@ -12,8 +12,13 @@ from nba_stats.client import (
     NBAStatsError,
     fetch_league_game_logs,
     fetch_league_standings,
+    fetch_player_info,
 )
-from nba_stats.storage import CSVStorageError, save_game_logs
+from nba_stats.storage import (
+    CSVStorageError,
+    player_ids_missing_profile_info,
+    save_game_logs,
+)
 
 
 def current_season(today: date | None = None) -> str:
@@ -83,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
             retry_delay_seconds=args.retry_delay,
             timeout_seconds=args.timeout,
         )
+        player_info = fetch_player_info(
+            player_ids_missing_profile_info(args.data_dir, game_logs["P"]),
+            max_attempts=args.attempts,
+            retry_delay_seconds=args.retry_delay,
+            timeout_seconds=args.timeout,
+        )
         standings = (
             fetch_league_standings(
                 args.season,
@@ -100,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             season=args.season,
             season_type=args.season_type,
             standings_rows=standings,
+            player_info_rows=player_info,
         )
     except (NBAStatsError, CSVStorageError, ValueError, OSError) as error:
         logging.exception("No se pudieron actualizar las estadísticas.")

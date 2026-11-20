@@ -2,8 +2,11 @@
 
 ## Fuente actual
 
-La extracción usa `nba_api` como cliente comunitario del endpoint NBA Stats
-`LeagueGameLog`, consultado por separado para `PlayerOrTeam=P` y `T`.
+La extracción usa `nba_api` como cliente comunitario de los endpoints NBA Stats
+`LeagueGameLog` y `CommonPlayerInfo`. `LeagueGameLog` se consulta por separado
+para `PlayerOrTeam=P` y `T`; `CommonPlayerInfo` se consulta por ID de jugador
+cuando falta al menos un campo del perfil de jugador (`COUNTRY_CODE`,
+`BIRTH_DATE`, `HEIGHT_METERS`, `WEIGHT_KG`, `POSITION` o `JERSEY_NUMBER`).
 `nba_api` no es una API oficial de NBA ni garantiza estabilidad, disponibilidad
 ni límites de uso. NBA puede modificar, limitar o bloquear el servicio. El
 proyecto no incorpora scraping de páginas web.
@@ -39,6 +42,8 @@ respuesta vacía de NBA Stats.
 |---|---|
 | IDs, nombres y abreviaturas de equipo; estadísticas de equipo por partido | `LeagueGameLog` de NBA Stats |
 | IDs, nombres y estadísticas de jugadores por partido | `LeagueGameLog` de NBA Stats |
+| Nacionalidad | `CommonPlayerInfo.COUNTRY`, conservada como `NATIONALITY`; `COUNTRY_CODE` se deriva con `pycountry` a ISO 3166-1 alpha-2 |
+| Nacimiento, altura, peso, posición y dorsal | `CommonPlayerInfo.BIRTHDATE`, `HEIGHT`, `WEIGHT`, `POSITION` y `JERSEY`; altura y peso se convierten a unidades métricas |
 | Local/visitante | Solo se confirma con los dos `MATCHUP` recíprocos (`vs.` y `@`); si no, los IDs de `GAMES` se ordenan de forma determinista y `TEAM_GAME_STATS.IS_HOME` queda vacío |
 | Marcador y ganador | `PTS` de ambos equipos; ganador es el ID del mayor marcador |
 | `SEASON` / `SEASON_TYPE` | Parámetros de la ejecución y `SEASON_ID` legado |
@@ -52,20 +57,26 @@ respuesta vacía de NBA Stats.
 
 ## Campos no recuperados
 
-El endpoint utilizado no proporciona en este flujo nacionalidad, nacimiento,
-Draft, premios, datos de carrera, arena/capacidad, color ni clasificación oficial;
-horas locales/UTC, asistencia, overtime, neutralidad, ronda de playoffs ni
-highlights verificados. `IS_NEUTRAL_SITE` queda vacío si no llega una señal
+`LeagueGameLog` no proporciona datos personales. `CommonPlayerInfo` proporciona
+país, nacimiento, altura, peso, posición y dorsal, pero no ofrece un código
+ISO; los países que no puedan convertirse se conservan en `NATIONALITY` y
+dejan `COUNTRY_CODE` vacío. Todavía no se recopilan Draft, premios, datos de
+carrera, arena/capacidad, color, clasificación oficial, horas
+locales/UTC, asistencia, overtime, neutralidad, ronda de playoffs ni highlights
+verificados.
+`IS_NEUTRAL_SITE` queda vacío si no llega una señal
 explícita; no se deduce de `MATCHUP`. Cuando la entrada sí incluye esa señal,
 se respeta sin añadir columnas al modelo. `AGE` debe calcularse en Power BI
 desde `BIRTH_DATE`, no persistirse como un valor fijo. No se realizan
-peticiones a servicios adicionales para fotografías, banderas o vídeos.
+peticiones a servicios adicionales para fotografías, banderas o vídeos; las
+URLs de bandera se construyen localmente a partir de `COUNTRY_CODE`.
 `FIRST_NAME` y `LAST_NAME` no forman parte del esquema final porque
 `PLAYER_NAME` ya identifica al jugador. `COUNTRY_CODE` solo se conserva si
 puede proceder de una fuente válida; una URL de bandera de `flagcdn.com` se
 deriva automáticamente únicamente con un código ISO 3166-1 alpha-2 de dos
-letras. Los demás datos personales permanecen vacíos hasta disponer de una
-fuente documentada.
+letras. Los códigos de país válidos ya almacenados no vuelven a consultarse;
+los demás datos personales permanecen vacíos hasta disponer de una fuente
+documentada.
 
 La falta o ambigüedad de `MATCHUP` no descarta partidos ni estadísticas. Si la
 fuente confirma cancha neutral pero no localía oficial, se conserva el orden

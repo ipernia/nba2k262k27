@@ -8,14 +8,15 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeGuard
+
+import pycountry
 
 
 class NBAStatsError(RuntimeError):
     """Error al solicitar o validar estadísticas de la NBA."""
 
 
-@runtime_checkable
 class GameLogFrame(Protocol):
     """Interfaz mínima del resultado tabular entregado por nba_api."""
 
@@ -54,6 +55,15 @@ _STANDINGS_ALIASES = (
     ("CONFERENCE_RANK", "ConferenceRank", "CONF_RANK", "PlayoffRank"),
     ("DIVISION_RANK", "DIV_RANK", "DivisionRank"),
     ("GAMES_BACK", "GB", "ConferenceGamesBack"),
+)
+_PLAYER_INFO_COLUMNS = (
+    "PERSON_ID",
+    "COUNTRY",
+    "BIRTHDATE",
+    "HEIGHT",
+    "WEIGHT",
+    "POSITION",
+    "JERSEY",
 )
 
 
@@ -140,7 +150,7 @@ def fetch_league_standings(
                 raise NBAStatsError("NBA.com devolvió una respuesta sin tablas.")
             rows = []
             for frame in frames:
-                if not isinstance(frame, GameLogFrame):
+                if not _is_game_log_frame(frame):
                     continue
                 candidate_rows = frame.to_dict("records")
                 if candidate_rows and _has_standings_columns(candidate_rows):
@@ -181,11 +191,135 @@ def fetch_league_standings(
     raise NBAStatsError("La consulta terminó sin un resultado válido.")
 
 
+def fetch_player_info(
+    player_ids: Sequence[object],
+    *,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 2,
+    timeout_seconds: int = 30,
+    endpoint_factory: EndpointFactory | None = None,
+) -> list[dict[str, object]]:
+    """Descarga los campos de perfil requeridos de CommonPlayerInfo.
+
+    CommonPlayerInfo devuelve el país como texto, no un código ISO; se conserva
+    ese texto en ``NATIONALITY`` y se convierte a ISO 3166-1 alpha-2.
+    """
+    _validate_retry_options(max_attempts, retry_delay_seconds, timeout_seconds)
+    if endpoint_factory is None:
+        try:
+            from nba_api.stats.endpoints import CommonPlayerInfo
+        except ImportError as error:
+            raise NBAStatsError(
+                "Falta nba_api. Instala las dependencias del proyecto con "
+                "'python -m pip install -e \".[dev]\"'."
+            ) from error
+        endpoint_factory = CommonPlayerInfo
+
+    results = []
+    seen_player_ids: set[str] = set()
+    for raw_player_id in player_ids:
+        if isinstance(raw_player_id, bool) or not str(raw_player_id).isdigit():
+            raise ValueError("PLAYER_ID debe ser un identificador numérico.")
+        player_id = str(raw_player_id)
+        if player_id in seen_player_ids:
+            continue
+        seen_player_ids.add(player_id)
+        results.append(
+            _fetch_player_info(
+                player_id=player_id,
+                endpoint_factory=endpoint_factory,
+                max_attempts=max_attempts,
+                retry_delay_seconds=retry_delay_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    return results
+
+
+def _fetch_player_info(
+    *,
+    player_id: str,
+    endpoint_factory: EndpointFactory,
+    max_attempts: int,
+    retry_delay_seconds: float,
+    timeout_seconds: int,
+) -> dict[str, object]:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            endpoint = endpoint_factory(
+                player_id=player_id,
+                timeout=timeout_seconds,
+            )
+            frames = endpoint.get_data_frames()
+            rows = []
+            if frames:
+                for frame in frames:
+                    if not _is_game_log_frame(frame):
+                        continue
+                    candidate_rows = frame.to_dict("records")
+                    if candidate_rows and all(
+                        column in candidate_rows[0] for column in _PLAYER_INFO_COLUMNS
+                    ):
+                        rows = candidate_rows
+                        break
+            if not rows:
+                raise NBAStatsError(
+                    "CommonPlayerInfo no devolvió el perfil completo del jugador "
+                    f"{player_id}."
+                )
+            returned_player_id = str(rows[0]["PERSON_ID"]).strip()
+            if returned_player_id != player_id:
+                raise NBAStatsError(
+                    "CommonPlayerInfo devolvió un PLAYER_ID inesperado: "
+                    f"{returned_player_id} (solicitado: {player_id})."
+                )
+            country_value = rows[0]["COUNTRY"]
+            country = "" if country_value is None else str(country_value).strip()
+            if country.casefold() in {"nan", "<na>"}:
+                country = ""
+            result: dict[str, object] = {
+                "PLAYER_ID": player_id,
+                "NATIONALITY": country,
+            }
+            result.update(
+                {column: rows[0][column] for column in _PLAYER_INFO_COLUMNS[2:]}
+            )
+            if country:
+                try:
+                    result["COUNTRY_CODE"] = pycountry.countries.lookup(country).alpha_2
+                except LookupError:
+                    pass
+            return result
+        except NBAStatsError:
+            raise
+        except Exception as error:
+            status_code = _http_status(error)
+            if not _is_retryable(error, status_code):
+                raise NBAStatsError(
+                    f"Falló CommonPlayerInfo para el jugador {player_id}"
+                    f"{f' (HTTP {status_code})' if status_code else ''}; "
+                    "el error no admite reintento."
+                ) from error
+            if attempt == max_attempts:
+                raise NBAStatsError(
+                    "No se pudo descargar CommonPlayerInfo para el jugador "
+                    f"{player_id} tras {max_attempts} intentos."
+                ) from error
+            time.sleep(_retry_delay(error, retry_delay_seconds, attempt))
+    raise NBAStatsError(
+        f"CommonPlayerInfo terminó sin un resultado válido para {player_id}."
+    )
+
+
 def _has_standings_columns(rows: Sequence[Mapping[str, object]]) -> bool:
     return all(
         any(alias in row for row in rows for alias in aliases)
         for aliases in _STANDINGS_ALIASES
     )
+
+
+def _is_game_log_frame(value: object) -> TypeGuard[GameLogFrame]:
+    return callable(getattr(value, "to_dict", None))
 
 
 def _first_value(row: Mapping[str, object], aliases: Sequence[str]) -> object:
@@ -210,6 +344,14 @@ def _validate_request_options(
         raise ValueError(
             "El año final de la temporada debe ser el siguiente al inicial."
         )
+    _validate_retry_options(max_attempts, retry_delay_seconds, timeout_seconds)
+
+
+def _validate_retry_options(
+    max_attempts: int,
+    retry_delay_seconds: float,
+    timeout_seconds: int,
+) -> None:
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
         raise ValueError("max_attempts debe ser un entero mayor que cero.")
     if max_attempts < 1:
@@ -250,7 +392,7 @@ def _fetch_one_game_log(
             if not frames:
                 raise NBAStatsError("NBA.com devolvió una respuesta sin tablas.")
             frame = frames[0]
-            if not isinstance(frame, GameLogFrame):
+            if not _is_game_log_frame(frame):
                 raise NBAStatsError(
                     "NBA.com devolvió una tabla con un formato no compatible."
                 )

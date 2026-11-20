@@ -14,6 +14,9 @@
 - Se migraron los campos disponibles de los CSV antiguos sin eliminar
   `data/old/` ni las tablas legacy de temporada.
 - Los campos no disponibles de forma oficial permanecen vacíos.
+- Se completan los perfiles incompletos de jugadores desde `CommonPlayerInfo`,
+  con fecha, medidas, posición, dorsal y nacionalidad; los valores se
+  normalizan y se deriva la URL de bandera.
 
 - Se simplificó la salida a los CSV de catálogos y estadísticas de partidos.
 - Se añadió `games.csv` con los datos del partido y los IDs de los equipos
